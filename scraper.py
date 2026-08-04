@@ -91,8 +91,13 @@ def fetch_page(session: requests.Session, url: str) -> Optional[str]:
     for attempt in range(1, config.MAX_RETRIES + 1):
         try:
             _polite_delay()
+            # Tuple timeout = (connect_timeout, read_timeout). Splitting the
+            # two means a slow-to-respond server (read hang) is caught just
+            # as reliably as a server that never accepts the connection.
             resp = session.get(
-                url, headers=_random_headers(), timeout=config.REQUEST_TIMEOUT
+                url,
+                headers=_random_headers(),
+                timeout=(10, config.REQUEST_TIMEOUT),
             )
             if resp.status_code == 200:
                 return resp.text
@@ -103,8 +108,16 @@ def fetch_page(session: requests.Session, url: str) -> Optional[str]:
                 continue
             logger.warning("Unexpected status %s on attempt %s", resp.status_code, attempt)
         except requests.exceptions.RequestException as exc:
-            logger.warning("Request failed (attempt %s/%s): %s", attempt, config.MAX_RETRIES, exc)
+            logger.warning(
+                "Request failed (attempt %s/%s): %s: %s",
+                attempt, config.MAX_RETRIES, type(exc).__name__, exc,
+            )
             time.sleep(5 * attempt)  # exponential-ish backoff
+        except Exception as exc:
+            # Catch-all so a truly unexpected error (e.g. a bug in a
+            # dependency) still can't escape and kill the calling thread.
+            logger.error("Unexpected error fetching %s (attempt %s/%s): %s", url, attempt, config.MAX_RETRIES, exc, exc_info=True)
+            time.sleep(5 * attempt)
     logger.error("All retries exhausted for %s", url)
     return None
 

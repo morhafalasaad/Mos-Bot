@@ -75,13 +75,18 @@ exact shape:
 """
     try:
         model = _get_model()
-        response = model.generate_content(prompt)
+        # CRITICAL: request_options timeout — without this the SDK call can
+        # hang indefinitely on a stalled connection with no error raised.
+        response = model.generate_content(
+            prompt,
+            request_options={"timeout": config.GEMINI_TIMEOUT},
+        )
         data = _extract_json(response.text)
         if data is None or "match_score" not in data:
             return None
         return data
     except Exception as exc:
-        logger.exception("Gemini scoring call failed: %s", exc)
+        logger.error("Gemini scoring call failed: %s", exc, exc_info=True)
         return None
 
 
@@ -107,11 +112,14 @@ def draft_proposal(title: str, description: str, budget: Optional[str] = None) -
 """
     try:
         model = _get_model()
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            request_options={"timeout": config.GEMINI_TIMEOUT},
+        )
         text = response.text.strip()
         return text if text else None
     except Exception as exc:
-        logger.exception("Gemini proposal drafting failed: %s", exc)
+        logger.error("Gemini proposal drafting failed: %s", exc, exc_info=True)
         return None
 
 

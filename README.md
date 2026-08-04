@@ -1,5 +1,50 @@
 # Mostaql Hybrid AI Freelance Assistant
 
+## Stability fix log (silent-hang issue on Render)
+
+If the worker ran for one or two cycles then went quiet with no crash and
+no error, the root cause was **`ai_agent.py`'s Gemini calls had no
+timeout** — `google-generativeai` does not time out by default, so a
+stalled connection to Gemini blocks that thread forever with zero output.
+Fixes applied:
+
+1. **`ai_agent.py`** — every `model.generate_content(...)` call now passes
+   `request_options={"timeout": config.GEMINI_TIMEOUT}` (default 30s).
+2. **`scraper.py`** — `requests.get` now uses a tuple timeout
+   `(connect_timeout=10, read_timeout=REQUEST_TIMEOUT)` instead of a single
+   value, and a catch-all `except Exception` was added around the retry
+   loop so no dependency bug can escape unnoticed.
+3. **`main.py`** — `run_cycle()` now runs on a background thread via
+   `ThreadPoolExecutor`, and the main thread calls
+   `future.result(timeout=CYCLE_TIMEOUT)` (default 600s). This is a hard
+   watchdog: even if something inside a cycle hangs despite the timeouts
+   above, the main loop itself can never block past `CYCLE_TIMEOUT` and
+   will log the timeout and move on to the next cycle.
+4. **Logging** — `main.py` now uses a `FlushingStreamHandler` that calls
+   `.flush()` after every log record, and forces `sys.stdout` into
+   line-buffered mode. All tracebacks are logged in full via
+   `traceback.format_exc()`. On Render, also set the environment variable
+   `PYTHONUNBUFFERED=1` as a second layer of insurance against delayed logs.
+5. **Sleep loop** — the single long `time.sleep(N)` was replaced with
+   `safe_sleep()`, which sleeps in 60-second chunks and logs a heartbeat
+   each chunk. This doesn't change behavior, but it makes a dead process
+   immediately distinguishable from a normally-sleeping one in the logs —
+   if heartbeats stop appearing, you know the process actually died at that
+   point rather than wondering if it's just still asleep.
+6. **`health_server.py`** (new) — since you're deploying as a Render **Web
+   Service** (which requires a bound port), this runs a minimal stdlib
+   HTTP server on `$PORT` in its own daemon thread, started from `main.py`
+   before the bot loop begins. Running it on a separate thread is what
+   makes it safe: a hang in the bot loop can't block the health check, and
+   vice versa. If you'd rather deploy as a Render **Background Worker**
+   instead (no port required), you can remove the `health_server` import
+   and its one call in `main.py` and switch service types in Render.
+
+After these changes, `main.py`'s outer loop and the watchdog together
+guarantee the process logs a heartbeat or an explicit error at least once
+every `CYCLE_TIMEOUT` seconds — it cannot go silent indefinitely.
+
+
 A 24/7 background worker that monitors Mostaql for new projects, scores them
 against your skill set using Gemini, drafts an Arabic proposal for strong
 matches, and sends everything to you on Telegram for final human review and

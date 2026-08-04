@@ -1,41 +1,78 @@
 """
 main.py
 -------
-Entry point for the background worker. Designed to run 24/7 on a cloud
-worker dyno (Render Background Worker, PythonAnywhere Always-On Task, or a
-simple `nohup python main.py &` on a VPS).
+Entry point for the background worker. Designed to run 24/7 on Render as a
+Web Service (bot loop + dummy health-check server side by side).
 
-Stability principles:
-- The outer `while True` loop wraps EVERY cycle in a try/except so a single
-  unexpected error (network blip, malformed HTML, API hiccup) never kills
-  the process — it just logs and waits for the next cycle.
-- All logging goes to stdout, which is what cloud platforms capture and
-  show in their log dashboards.
-- Sleep interval is randomized within a range to also help avoid
-  predictable, bot-like request patterns.
+Why the bot was hanging (root causes fixed in this version):
+1. `model.generate_content(prompt)` in ai_agent.py had NO timeout. The
+   google-generativeai SDK does not time out by default, so a stalled
+   connection to Gemini would block that thread forever with zero error
+   output — exactly the "stops logging, never crashes, never restarts"
+   symptom described. Fixed via `request_options={"timeout": ...}` in
+   ai_agent.py.
+2. No watchdog around a full cycle. Even with per-call timeouts, unknown
+   edge cases (DNS hangs, SSL handshake stalls, etc.) can occasionally slip
+   past a library's own timeout handling. `run_cycle()` is now executed in
+   a worker thread with `future.result(timeout=CYCLE_TIMEOUT)` in the main
+   thread, so the main loop itself can NEVER block longer than
+   CYCLE_TIMEOUT seconds, no matter what happens inside the cycle.
+3. Logging wasn't guaranteed to flush immediately when stdout isn't a TTY
+   (as on Render). Fixed by forcing line-buffered stdout and flushing
+   explicitly after every log record.
+4. A single long `time.sleep(N)` doesn't itself cause hangs, but it does
+   mean you can't tell, from the logs, whether the process is "sleeping
+   normally" or "already dead" during that window. Replaced with a chunked
+   sleep that logs a heartbeat periodically, so a silent process is now
+   immediately distinguishable from a normal sleeping one in the Render logs.
 """
 
+import concurrent.futures
 import logging
 import random
 import sys
 import time
+import traceback
 
 import config
 import scraper
 import ai_agent
 import notifier
+import health_server
+
+# ---------------------------------------------------------------------------
+# Logging setup: force unbuffered / line-buffered output so Render's log
+# dashboard shows lines in real time instead of in delayed batches.
+# ---------------------------------------------------------------------------
+try:
+    sys.stdout.reconfigure(line_buffering=True)  # Python 3.7+
+except Exception:
+    pass
+
+
+class FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler that explicitly flushes after every single record."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
+    handlers=[FlushingStreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("main")
+
+# One worker is enough — cycles run sequentially, we just need them to run
+# OFF the main thread so the main thread can enforce a hard timeout on them.
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cycle")
 
 
 def run_cycle():
     """One full monitor -> evaluate -> notify pass. Never raises."""
     new_projects = scraper.get_new_projects()
+    logger.info("Cycle fetched %s new project(s) to evaluate", len(new_projects))
 
     for project in new_projects:
         try:
@@ -62,42 +99,97 @@ def run_cycle():
             else:
                 logger.info("Below threshold (%.0f%%) — skipping notification", config.MATCH_THRESHOLD)
 
-        except Exception as exc:
+        except Exception:
             # Per-project isolation: one bad project must not stop the batch.
-            logger.exception("Error processing project '%s': %s", getattr(project, "title", "?"), exc)
+            logger.error(
+                "Error processing project '%s':\n%s",
+                getattr(project, "title", "?"),
+                traceback.format_exc(),
+            )
             continue
+
+
+def run_cycle_with_watchdog() -> bool:
+    """
+    Runs run_cycle() on a background thread and enforces a hard wall-clock
+    timeout from the main thread. Returns True if the cycle completed
+    normally within the timeout, False otherwise. The main loop NEVER
+    blocks longer than config.CYCLE_TIMEOUT seconds here, regardless of
+    what happens inside run_cycle (network hang, library bug, etc.).
+    """
+    future = _executor.submit(run_cycle)
+    try:
+        future.result(timeout=config.CYCLE_TIMEOUT)
+        return True
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Cycle exceeded CYCLE_TIMEOUT (%ss) and was abandoned. "
+            "The stuck call will keep running in the background and its "
+            "thread will be discarded; the main loop is moving on.",
+            config.CYCLE_TIMEOUT,
+        )
+        return False
+    except Exception:
+        logger.error("Cycle raised an unexpected exception:\n%s", traceback.format_exc())
+        return False
+
+
+def safe_sleep(total_seconds: int, chunk_seconds: int = 60):
+    """
+    Sleeps in small chunks instead of one long blocking call, logging a
+    heartbeat each chunk. This makes it immediately obvious in the Render
+    logs whether the process is alive-and-sleeping vs. actually dead —
+    and keeps the sleep itself simple and interruption-safe.
+    """
+    remaining = total_seconds
+    while remaining > 0:
+        this_chunk = min(chunk_seconds, remaining)
+        time.sleep(this_chunk)
+        remaining -= this_chunk
+        if remaining > 0:
+            logger.info("...still sleeping (%ss remaining until next cycle)", remaining)
 
 
 def main():
     logger.info("Starting Mostaql AI Freelance Assistant worker...")
     logger.info(
-        "Poll interval: %s-%s seconds | Match threshold: %s%%",
-        config.POLL_INTERVAL_MIN, config.POLL_INTERVAL_MAX, config.MATCH_THRESHOLD,
+        "Poll interval: %s-%s s | Match threshold: %s%% | Cycle watchdog: %ss | Gemini timeout: %ss",
+        config.POLL_INTERVAL_MIN, config.POLL_INTERVAL_MAX,
+        config.MATCH_THRESHOLD, config.CYCLE_TIMEOUT, config.GEMINI_TIMEOUT,
     )
+
+    # Health-check server for Render's Web Service port scan — runs
+    # independently on a daemon thread so it can never be blocked by the
+    # bot loop, and vice versa.
+    health_server.start_health_server_in_background()
 
     consecutive_failures = 0
 
     while True:
         try:
-            run_cycle()
-            consecutive_failures = 0
-        except Exception as exc:
-            # Absolute outer safety net — the process must survive this.
+            success = run_cycle_with_watchdog()
+            consecutive_failures = 0 if success else consecutive_failures + 1
+        except Exception:
+            # Absolute outer safety net — the process must survive this no
+            # matter what. Full traceback always logged.
             consecutive_failures += 1
-            logger.exception("Unhandled error in main loop (failure #%s): %s", consecutive_failures, exc)
+            logger.error(
+                "Unhandled error in main loop (failure #%s):\n%s",
+                consecutive_failures, traceback.format_exc(),
+            )
 
-            if consecutive_failures >= 5:
-                try:
-                    notifier.notify_error(
-                        "main loop",
-                        f"{consecutive_failures} consecutive failures. Last error: {exc}",
-                    )
-                except Exception:
-                    pass  # even the error notification must not crash the loop
+        if consecutive_failures and consecutive_failures % 5 == 0:
+            try:
+                notifier.notify_error(
+                    "main loop",
+                    f"{consecutive_failures} consecutive failed/timed-out cycles.",
+                )
+            except Exception:
+                logger.error("Failed to send error notification:\n%s", traceback.format_exc())
 
         sleep_seconds = random.randint(config.POLL_INTERVAL_MIN, config.POLL_INTERVAL_MAX)
         logger.info("Cycle complete. Sleeping for %s seconds...", sleep_seconds)
-        time.sleep(sleep_seconds)
+        safe_sleep(sleep_seconds)
 
 
 if __name__ == "__main__":

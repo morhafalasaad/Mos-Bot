@@ -64,5 +64,18 @@ POLL_INTERVAL_MAX = int(os.getenv("POLL_INTERVAL_MAX", "600"))   # 10 min
 SEEN_PROJECTS_FILE = os.getenv("SEEN_PROJECTS_FILE", "seen_projects.json")
 
 # ---- Networking / anti-ban -----------------------------------------------------
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "20"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "20"))       # requests (scraper/telegram)
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+
+# ---- Gemini call timeout (seconds) ---------------------------------------------
+# The google-generativeai SDK does NOT time out by default — this is the #1
+# cause of a worker silently hanging forever with no error and no logs.
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "30"))
+
+# ---- Watchdog: max seconds a single monitor->evaluate->notify cycle may take ---
+# If a cycle exceeds this, the main loop abandons it and moves on instead of
+# hanging forever. Should comfortably exceed (new_projects * per-project time).
+CYCLE_TIMEOUT = int(os.getenv("CYCLE_TIMEOUT", "600"))  # 10 min
+
+# ---- Dummy HTTP server (Render Web Service requires a bound port) --------------
+PORT = int(os.getenv("PORT", "10000"))
