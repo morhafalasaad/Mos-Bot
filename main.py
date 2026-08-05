@@ -90,7 +90,12 @@ def run_cycle():
                 evaluation.suggested_price, evaluation.delivery_days,
             )
 
-            if evaluation.match_score > config.MATCH_THRESHOLD and evaluation.proposal_ar:
+            # >= : must match ai_agent.py's evaluate_project() comparison
+            # exactly (score >= config.MATCH_THRESHOLD) — that's the gate
+            # that actually decides whether proposal_ar gets set at all, so
+            # using a different operator here would be meaningless (a
+            # boundary-score project would already have no proposal to send).
+            if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
                 notifier.notify_matched_project(
                     title=project.title,
                     url=project.url,
@@ -101,7 +106,16 @@ def run_cycle():
                     delivery_days=evaluation.delivery_days,
                 )
             else:
-                logger.info("Below threshold (%.0f%%) — skipping notification", config.MATCH_THRESHOLD)
+                # Bug fix: this used to log config.MATCH_THRESHOLD (the
+                # threshold itself) instead of the project's actual score,
+                # so EVERY skipped project's log line showed the threshold
+                # value regardless of what it actually scored — which is
+                # exactly what made a real threshold/rounding bug look like
+                # this in the first place. Now logs the real score.
+                logger.info(
+                    "Below threshold (project scored %.0f%%, threshold is %.0f%%) — skipping notification",
+                    evaluation.match_score, config.MATCH_THRESHOLD,
+                )
 
         except Exception:
             # Per-project isolation: one bad project must not stop the batch.
