@@ -76,11 +76,12 @@ def run_cycle():
 
     for project in new_projects:
         try:
-            logger.info("Evaluating project: %s", project.title)
+            logger.info("Evaluating project: %s (tags: %s)", project.title, project.tags)
             evaluation = ai_agent.evaluate_project(
                 title=project.title,
                 description=project.description,
                 budget=project.budget,
+                tags=project.tags,
             )
 
             logger.info(

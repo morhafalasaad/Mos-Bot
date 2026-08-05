@@ -30,7 +30,30 @@ def _require(name: str, default: str | None = None) -> str:
 
 
 # ---- Gemini (Google Gen AI) -------------------------------------------------
-GEMINI_API_KEY = _require("GEMINI_API_KEY")
+# Multiple API keys for rotation on quota exhaustion (429 RESOURCE_EXHAUSTED).
+# ai_agent.py automatically rotates to the next key in this list when the
+# active one hits its quota, so a single free-tier key limit doesn't stall
+# the bot. Set as a comma-separated list:
+#   GEMINI_API_KEYS=key_one,key_two,key_three
+# GEMINI_API_KEY (singular) is still honored for backward compatibility —
+# if only that's set, it's used as the sole key (no rotation available).
+_env_keys_list = os.getenv("GEMINI_API_KEYS")
+_env_key_single = os.getenv("GEMINI_API_KEY")
+
+if _env_keys_list:
+    GEMINI_API_KEYS = [k.strip() for k in _env_keys_list.split(",") if k.strip()]
+elif _env_key_single:
+    GEMINI_API_KEYS = [_env_key_single.strip()]
+else:
+    raise EnvironmentError(
+        "No Gemini API key configured. Set GEMINI_API_KEYS (comma-separated, "
+        "for rotation) or at least GEMINI_API_KEY (single key) in your cloud "
+        "platform's secrets/env settings."
+    )
+
+# Kept as an alias for any code that still references the singular name.
+GEMINI_API_KEY = GEMINI_API_KEYS[0]
+
 # Single stable model, used directly with no fallback chain (by request).
 # Override via the GEMINI_MODEL env var if Google renames/retires this
 # model later — no code change needed.
@@ -46,6 +69,16 @@ MOSTAQL_PROJECTS_URL = os.getenv(
 )
 # Comma-separated category filters, e.g. "python,data-science,machine-learning"
 MOSTAQL_CATEGORIES = os.getenv("MOSTAQL_CATEGORIES", "")
+
+# Fetch each NEW project's own detail page to read its official required-
+# skill tags ("المهارات المطلوبة"), used for local pre-filtering before any
+# Gemini call is made (see ai_agent.local_skill_prefilter). This is an EXTRA
+# Mostaql HTTP request per newly-seen project (not per Gemini call) — the
+# trade is one cheap Mostaql request to potentially skip one Gemini API
+# call entirely. Disable if this causes extra bot-detection friction; the
+# pre-filter fails OPEN (never blocks) when tags are unavailable, so
+# disabling this only means "back to evaluating every new project."
+FETCH_PROJECT_TAGS = os.getenv("FETCH_PROJECT_TAGS", "true").strip().lower() in ("1", "true", "yes")
 
 # ---- Matching / scoring -------------------------------------------------------
 MY_SKILLS = [

@@ -48,7 +48,7 @@ import os
 import random
 import re
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
 import requests
@@ -129,6 +129,18 @@ RAW_ANCHOR_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Mostaql skill/tag pages follow /projects/skill/<slug> — project detail
+# pages link each required-skill tag ("المهارات المطلوبة") to its own
+# archive page using this exact pattern, so it's used the same way
+# PROJECT_LINK_RE is: to find tags independent of any CSS class name.
+TAG_LINK_RE = re.compile(r"/projects/skill/([^\"'/?#]+)")
+
+# Raw-regex fallback for tags, mirroring RAW_ANCHOR_RE's approach.
+RAW_TAG_ANCHOR_RE = re.compile(
+    r'<a\b[^>]*?href=["\']([^"\']*?/projects/skill/[^"\']*)["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+# real listing, so we can log it clearly instead of just "0 projects".
 # Signatures that indicate a block / bot-challenge page rather than the
 # real listing, so we can log it clearly instead of just "0 projects".
 BLOCK_SIGNATURES = [
@@ -150,6 +162,11 @@ class Project:
     description: str
     url: str
     budget: Optional[str] = None
+    # Official "المهارات المطلوبة" (required skills) tags from the project's
+    # own detail page. Only the LISTING page is scraped by default — tags
+    # live on each project's individual page, so this stays empty until
+    # fetch_project_tags() is called for that project (see get_new_projects).
+    tags: List[str] = field(default_factory=list)
 
 
 def _build_session():
@@ -403,7 +420,74 @@ def _parse_via_raw_regex(html: str) -> List[Project]:
     return projects
 
 
-def parse_projects(html: str) -> List[Project]:
+def _parse_tags_via_bs4(soup: BeautifulSoup) -> List[str]:
+    """Finds every anchor linking to /projects/skill/<slug> on a project's
+    detail page — these are the official required-skill tags. Order-preserving,
+    de-duplicated."""
+    tags: List[str] = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        if not TAG_LINK_RE.search(a["href"]):
+            continue
+        text = a.get_text(strip=True)
+        if text and text not in seen:
+            seen.add(text)
+            tags.append(text)
+    return tags
+
+
+def _parse_tags_via_raw_regex(html: str) -> List[str]:
+    """Guaranteed fallback — same rationale as _parse_via_raw_regex above:
+    bypasses BeautifulSoup's tree-building entirely."""
+    tags: List[str] = []
+    seen = set()
+    for _href, inner_html in RAW_TAG_ANCHOR_RE.findall(html):
+        text = _strip_inner_tags(inner_html)
+        if text and text not in seen:
+            seen.add(text)
+            tags.append(text)
+    return tags
+
+
+def parse_project_tags(html: str) -> List[str]:
+    """Parses a project DETAIL page's HTML for its official required-skill
+    tags. Tries BeautifulSoup first, falls back to raw regex. Returns an
+    empty list (never raises) if none are found — callers must treat an
+    empty list as 'unknown', not 'no skills required', since local
+    pre-filtering fails OPEN (doesn't block) when tags are unavailable."""
+    if not html:
+        return []
+    soup = _make_soup(html)
+    tags = _parse_tags_via_bs4(soup)
+    if tags:
+        return tags
+    return _parse_tags_via_raw_regex(html)
+
+
+def fetch_project_tags(session, project: Project) -> List[str]:
+    """
+    Fetches a single project's own detail page and extracts its required-
+    skill tags. This is an EXTRA Mostaql request per newly-seen project
+    (gated by config.FETCH_PROJECT_TAGS), separate from the one listing-page
+    request per cycle. The trade-off is intentional: it only runs for
+    projects that already passed dedup and would otherwise cost a Gemini
+    API call — spending one cheap Mostaql request to potentially save a
+    Gemini call is the whole point of local pre-filtering.
+
+    Never raises: returns [] on any failure (block, timeout, parse miss),
+    which is the correct "unknown" signal for the fail-open pre-filter.
+    """
+    try:
+        html = fetch_page(session, project.url)
+        tags = parse_project_tags(html)
+        logger.info("Fetched %s tag(s) for project '%s': %s", len(tags), project.title, tags)
+        return tags
+    except Exception as exc:
+        logger.warning("Could not fetch/parse tags for %s: %s", project.url, exc)
+        return []
+
+
+
     """
     Parse the listing HTML into Project objects, trying three strategies in
     order of preference (richest data first, most-robust-and-guaranteed
@@ -499,6 +583,12 @@ def get_new_projects() -> List[Project]:
             seen.update(p.id for p in new_projects)
             _save_seen(seen)
             logger.info("Found %s new project(s)", len(new_projects))
+
+            if config.FETCH_PROJECT_TAGS:
+                for project in new_projects:
+                    project.tags = fetch_project_tags(session, project)
+            else:
+                logger.info("FETCH_PROJECT_TAGS is disabled — skipping per-project tag fetch")
         else:
             logger.info("No new projects this cycle")
 
