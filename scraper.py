@@ -487,7 +487,7 @@ def fetch_project_tags(session, project: Project) -> List[str]:
         return []
 
 
-
+def parse_projects(html: str) -> List[Project]:
     """
     Parse the listing HTML into Project objects, trying three strategies in
     order of preference (richest data first, most-robust-and-guaranteed
