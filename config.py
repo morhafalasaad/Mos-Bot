@@ -53,8 +53,13 @@ MY_SKILLS = [
     "C",
     "C++",
     "PowerPoint Presentation Design",
+    "C#",
+    "Flutter",
+    "Object-Oriented Programming (OOP)",
+    "MATLAB",
+    "Document Formatting",
 ]
-MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "75"))
+MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
 
 # ---- Loop timing (seconds) ----------------------------------------------------
 POLL_INTERVAL_MIN = int(os.getenv("POLL_INTERVAL_MIN", "300"))   # 5 min
