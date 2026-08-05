@@ -81,35 +81,24 @@ MOSTAQL_CATEGORIES = os.getenv("MOSTAQL_CATEGORIES", "")
 FETCH_PROJECT_TAGS = os.getenv("FETCH_PROJECT_TAGS", "true").strip().lower() in ("1", "true", "yes")
 
 # ---- Matching / scoring -------------------------------------------------------
+# Mostaql project tags are frequently in Arabic (e.g. "علم البيانات" rather
+# than "Data Science"), so each skill below has an Arabic entry alongside
+# its English one — the local pre-filter matches whichever one appears in
+# the project's actual tags. Add more Arabic synonyms here if you notice
+# real projects being filtered out that shouldn't be (check the
+# "Fetched N tag(s) for project ..." log line in scraper.py to see what
+# Mostaql is actually tagging things with).
 MY_SKILLS = [
-    # --- English Skills (Original) ---
-    "Python",
-    "Data Science",
-    "Machine Learning",
-    "Embedded Systems",
-    "C",
-    "C++",
-    "PowerPoint Presentation Design",
-    "C#",
-    "Flutter",
-    "Object-Oriented Programming (OOP)",
-    "MATLAB",
-    "Document Formatting",
-    
-    # --- Arabic Equivalents & Mostaql Tags ---
-    "بايثون",
-    "برمجة",
-    "تطوير الويب",
-    "تطوير تطبيقات",
-    "تطوير تطبيقات الهواتف الذكية",
-    "هندسة البرمجيات",
-    "أنظمة مدمجة",
-    "علوم البيانات",
-    "تعلم الآلة",
-    "تطوير واجهات",
-    "برمجة مواقع",
-    "تطوير البرمجيات",
-    "تصميم عروض تقديمية"
+    "Python", "بايثون",
+    "Data Science", "علم البيانات",
+    "Machine Learning", "تعلم الآلة", "تعلم الالة",
+    "Embedded Systems", "الأنظمة المدمجة", "أنظمة مدمجة",
+    "C", "C++", "C#",
+    "PowerPoint Presentation Design", "تصميم عروض بوربوينت", "بوربوينت",
+    "Flutter", "فلاتر",
+    "Object-Oriented Programming (OOP)", "البرمجة الكائنية", "البرمجة الشيئية",
+    "MATLAB", "ماتلاب",
+    "Document Formatting", "تنسيق المستندات", "تنسيق مستندات",
 ]
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
 
@@ -128,6 +117,14 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 # The google-generativeai SDK does NOT time out by default — this is the #1
 # cause of a worker silently hanging forever with no error and no logs.
 GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "30"))
+
+# ---- Transient Gemini error retry (504 Gateway Timeout / DEADLINE_EXCEEDED / 503) ---
+# Distinct from API-key rotation (which only helps with 429 quota errors):
+# these are gateway/server-side hiccups where retrying the SAME key after a
+# short wait is the right move. See ai_agent._generate() for the full
+# retry-then-rotate logic.
+GEMINI_MAX_TRANSIENT_RETRIES = int(os.getenv("GEMINI_MAX_TRANSIENT_RETRIES", "2"))
+GEMINI_RETRY_BACKOFF_BASE = float(os.getenv("GEMINI_RETRY_BACKOFF_BASE", "2"))  # seconds
 
 # ---- Watchdog: max seconds a single monitor->evaluate->notify cycle may take ---
 # If a cycle exceeds this, the main loop abandons it and moves on instead of

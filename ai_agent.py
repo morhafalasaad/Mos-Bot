@@ -5,15 +5,18 @@ Uses Google's Gen AI SDK (`from google import genai`) to:
   1. Score how well a project matches the freelancer's skill set (0-100),
      and estimate a suggested bid price and delivery time.
   2. If the score clears the threshold, draft a persuasive, customized
-     proposal in Arabic based on the project's specific details.
+     proposal in Arabic based on the project's details.
 
-Two cost-control features on top of that:
+Three reliability features on top of that:
 
 LOCAL TAG PRE-FILTERING (zero API cost for irrelevant projects)
 -------------------------------------------------------------------
 Before any Gemini call is made, `local_skill_prefilter()` compares the
 project's official Mostaql skill tags (scraped from its detail page —
-see scraper.fetch_project_tags) against config.MY_SKILLS. If there's no
+see scraper.fetch_project_tags) against config.MY_SKILLS — which can mix
+English and Arabic entries freely; matching is plain case-insensitive
+substring matching, language-agnostic (Python's str.lower() is a safe
+no-op on Arabic script, so mixed-language lists just work). If there's no
 overlap at all, `evaluate_project()` returns immediately with
 match_score=0.0 and makes ZERO Gemini API calls for that project.
 
@@ -25,12 +28,28 @@ project than silently drop a good one because of a scraping gap.
 
 API KEY ROTATION (survive per-key free-tier quota limits)
 -------------------------------------------------------------------
-`config.GEMINI_API_KEYS` is a list. `_generate()` tries the current key;
-if the call fails with a 429 / RESOURCE_EXHAUSTED quota error, it rotates
-to the next key in the list, rebuilds the client, and retries — up to once
-per configured key. Any other kind of error (bad prompt, network issue,
-etc.) is NOT treated as a rotation trigger and is raised immediately, so we
-don't burn through every key on an unrelated failure.
+`config.GEMINI_API_KEYS` is a list. On a 429 / RESOURCE_EXHAUSTED quota
+error, `_generate()` immediately rotates to the next key, rebuilds the
+client, and retries — no backoff wait, since a different key's quota is
+unrelated to how long we wait on this one.
+
+TRANSIENT-ERROR RETRY (504 Gateway Timeout / DEADLINE_EXCEEDED / 503)
+-------------------------------------------------------------------
+These are different from quota errors: switching keys doesn't fix a
+timed-out gateway, so `_generate()` instead retries the SAME key with
+short exponential backoff, up to config.GEMINI_MAX_TRANSIENT_RETRIES times,
+before giving up on that key and (only then) also rotating to the next key
+as a last resort. Any error that is neither a quota error nor a recognized
+transient error is raised immediately without retrying or rotating, so a
+genuinely broken prompt/request doesn't waste time or keys.
+
+Both retry paths are bounded (at most n_keys * (1 + max_transient_retries)
+attempts total), so `_generate()` always eventually returns or raises —
+it cannot loop forever. score_project()/draft_proposal() catch whatever it
+raises and return None, and evaluate_project() turns that into a safe
+fallback Evaluation (match_score=0.0, suggested_price=None,
+delivery_days=None) rather than letting the exception propagate — so one
+bad project can never take down main.py's loop.
 
 SDK NOTE: single stable model (config.GEMINI_MODEL, default
 "gemini-3.5-flash"), no model fallback chain, per current requirements.
@@ -46,6 +65,7 @@ timeout), which is untouched by this file and must stay in place.
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -86,6 +106,25 @@ def _is_quota_error(exc: Exception) -> bool:
     return "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower()
 
 
+def _is_transient_error(exc: Exception) -> bool:
+    """
+    Detects gateway/server-side transient errors — 504 Gateway Timeout,
+    DEADLINE_EXCEEDED, 503 Service Unavailable, and generic 500s — which are
+    worth retrying on the SAME key after a short backoff (unlike quota
+    errors, a different key doesn't fix a timed-out gateway).
+    """
+    code = getattr(exc, "code", None)
+    if code in (500, 502, 503, 504):
+        return True
+    text = str(exc)
+    markers = (
+        "504", "DEADLINE_EXCEEDED", "Gateway Timeout",
+        "503", "UNAVAILABLE", "Service Unavailable",
+        "500", "Internal error", "Server disconnected",
+    )
+    return any(marker.lower() in text.lower() for marker in markers)
+
+
 @dataclass
 class Evaluation:
     match_score: float
@@ -97,39 +136,90 @@ class Evaluation:
 
 def _generate(prompt: str, json_mode: bool = False):
     """
-    Calls the currently active Gemini API key/client. On a quota error
-    (429 RESOURCE_EXHAUSTED), rotates to the next key in
-    config.GEMINI_API_KEYS, rebuilds the client, and retries — up to once
-    per configured key. Any non-quota error is raised immediately without
-    rotating. Raises the last exception if every key is exhausted.
+    Calls the currently active Gemini API key/client, with two distinct
+    retry strategies layered together:
+
+      - Quota error (429/RESOURCE_EXHAUSTED): rotate to the next key
+        immediately (no backoff — a different key's quota is unaffected by
+        how long we wait), retry.
+      - Transient error (504/DEADLINE_EXCEEDED/503/500): retry the SAME key
+        with short exponential backoff, up to
+        config.GEMINI_MAX_TRANSIENT_RETRIES times. Only after exhausting
+        those retries does it also rotate to the next key as a last resort.
+      - Anything else: raised immediately, no retry/rotation wasted on a
+        genuinely broken request.
+
+    Bounded to at most n_keys * (1 + GEMINI_MAX_TRANSIENT_RETRIES) attempts
+    total, so this always eventually returns or raises. Raises the last
+    exception if every key/retry combination is exhausted; callers
+    (score_project/draft_proposal) catch that and return None.
     """
     global _client, _current_key_index
 
     gen_config = types.GenerateContentConfig(response_mime_type="application/json") if json_mode else None
-    n = len(config.GEMINI_API_KEYS)
+    n_keys = len(config.GEMINI_API_KEYS)
 
     last_exc: Optional[Exception] = None
-    for attempt in range(n):
-        try:
-            return _client.models.generate_content(
-                model=config.GEMINI_MODEL,
-                contents=prompt,
-                config=gen_config,
-            )
-        except Exception as exc:
-            last_exc = exc
-            if _is_quota_error(exc) and n > 1:
-                _current_key_index = (_current_key_index + 1) % n
-                logger.warning(
-                    "Gemini API key #%s hit quota (429/RESOURCE_EXHAUSTED) — "
-                    "rotating to key #%s of %s and retrying",
-                    attempt + 1, _current_key_index + 1, n,
-                )
-                _client = _build_client(_current_key_index)
-                continue
-            raise
+    keys_tried = 0
 
-    logger.error("All %s Gemini API key(s) exhausted their quota. Last error: %s", n, last_exc)
+    while keys_tried < n_keys:
+        for transient_attempt in range(config.GEMINI_MAX_TRANSIENT_RETRIES + 1):
+            try:
+                return _client.models.generate_content(
+                    model=config.GEMINI_MODEL,
+                    contents=prompt,
+                    config=gen_config,
+                )
+            except Exception as exc:
+                last_exc = exc
+
+                if _is_quota_error(exc):
+                    logger.warning(
+                        "Gemini API key #%s hit quota (429/RESOURCE_EXHAUSTED) — rotating key",
+                        _current_key_index + 1,
+                    )
+                    break  # stop retrying this key on this error; rotate below
+
+                if _is_transient_error(exc):
+                    if transient_attempt < config.GEMINI_MAX_TRANSIENT_RETRIES:
+                        wait = config.GEMINI_RETRY_BACKOFF_BASE * (transient_attempt + 1)
+                        logger.warning(
+                            "Transient Gemini error (%s: %s) on key #%s — retrying same "
+                            "key in %ss (attempt %s/%s)",
+                            type(exc).__name__, exc, _current_key_index + 1,
+                            wait, transient_attempt + 1, config.GEMINI_MAX_TRANSIENT_RETRIES,
+                        )
+                        time.sleep(wait)
+                        continue  # retry same key
+                    else:
+                        logger.warning(
+                            "Transient Gemini error persisted after %s retries on key #%s "
+                            "— rotating key as a last resort",
+                            config.GEMINI_MAX_TRANSIENT_RETRIES, _current_key_index + 1,
+                        )
+                        break  # exhausted retries on this key; fall through to rotation below
+
+                # Not a quota error, and not a (recognized) transient error
+                # at all — not worth retrying or rotating for. Raise immediately.
+                logger.error("Non-retryable Gemini error: %s", exc, exc_info=True)
+                raise
+
+        # Reached only via the quota `break` above, or after exhausting
+        # transient retries on this key without success.
+        keys_tried += 1
+        if keys_tried >= n_keys:
+            break
+        _current_key_index = (_current_key_index + 1) % n_keys
+        logger.warning(
+            "Rotating to Gemini API key #%s of %s after repeated failures on the previous key",
+            _current_key_index + 1, n_keys,
+        )
+        _client = _build_client(_current_key_index)
+
+    logger.error(
+        "All %s Gemini API key(s) exhausted (quota and/or repeated transient errors). "
+        "Last error: %s", n_keys, last_exc,
+    )
     raise last_exc if last_exc else RuntimeError("No Gemini API keys available")
 
 
