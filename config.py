@@ -103,20 +103,21 @@ MY_SKILLS = [
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
 
 # ---- Loop timing (seconds) ----------------------------------------------------
-# Default is 45-60 min between cycles, sized for Gemini's free-tier quota
-# (20 requests/day for gemini-3.5-flash): at ~24 cycles/day max, that's under
-# 1 request per cycle on average even before accounting for the fact that a
-# single new project can cost up to 2 calls (score_project + draft_proposal
-# if it clears MATCH_THRESHOLD) — so if several new projects land in one
-# cycle, that cycle alone can still burn a meaningful chunk of the daily
-# quota. The local tag pre-filter (zero-cost skip for irrelevant projects)
-# and the 429 key-rotation/retry logic in ai_agent.py both help absorb
-# bursts like that; this interval is the other half of staying under quota.
-# Override with POLL_INTERVAL_MIN/MAX (seconds) if you add more API keys
-# (config.GEMINI_API_KEYS) and want to poll more often, or if you're on a
-# paid Gemini tier with a much higher daily limit.
-POLL_INTERVAL_MIN = int(os.getenv("POLL_INTERVAL_MIN", "2700"))  # 45 min
-POLL_INTERVAL_MAX = int(os.getenv("POLL_INTERVAL_MAX", "3600"))  # 60 min
+# Fast polling (5-10 min) so new projects are caught close to real-time.
+# NOTE: this was previously widened to 45-60 min specifically to fit inside
+# Gemini's free-tier quota (20 requests/day for gemini-3.5-flash) — at this
+# faster interval you WILL hit 429 RESOURCE_EXHAUSTED again once the daily
+# quota is used up (likely within a couple of hours, same as before). That's
+# not a bug: ai_agent.py's 429 handling (config.GEMINI_API_KEYS rotation,
+# and the local tag pre-filter that skips irrelevant projects at zero API
+# cost) will keep the bot from crashing when that happens, but scoring will
+# simply stop working — reasoning="AI scoring unavailable (error)" — for the
+# rest of the day until the quota resets. If real-time checking matters more
+# than exhaustive scoring, consider adding more entries to GEMINI_API_KEYS
+# (each free key gets its own 20/day budget) or a paid Gemini tier.
+# Override with POLL_INTERVAL_MIN/MAX (seconds) as always.
+POLL_INTERVAL_MIN = int(os.getenv("POLL_INTERVAL_MIN", "300"))   # 5 min
+POLL_INTERVAL_MAX = int(os.getenv("POLL_INTERVAL_MAX", "420"))   # 7 min
 
 # ---- Persistence (avoid re-processing the same project) -----------------------
 SEEN_PROJECTS_FILE = os.getenv("SEEN_PROJECTS_FILE", "seen_projects.json")
