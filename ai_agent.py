@@ -133,18 +133,85 @@ def _generate(prompt: str, json_mode: bool = False):
     raise last_exc if last_exc else RuntimeError("No Gemini API keys available")
 
 
+def _extract_balanced_json(text: str) -> Optional[str]:
+    """
+    Scans for the first top-level {...} object using string-aware
+    brace-depth tracking, instead of relying on regex alone.
+
+    Why: a plain greedy regex like r'\\{.*\\}' matches from the FIRST '{'
+    to the VERY LAST '}' anywhere in the text. That breaks exactly on the
+    anomalies Gemini sometimes produces — trailing prose after the JSON,
+    a stray extra closing brace, or a second brace-like fragment further
+    in the response — because the greedy match swallows all of it into
+    one invalid blob. Tracking brace depth character-by-character (while
+    correctly ignoring braces that appear inside quoted string values)
+    finds the exact end of the real JSON object and ignores everything
+    after it.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    return None  # unbalanced (truncated response) — no complete object found
+
+
 def _extract_json(text: str) -> Optional[dict]:
-    """Gemini sometimes wraps JSON in ```json fences — strip and parse safely."""
-    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
+    """
+    Robustly extracts and parses a JSON object from Gemini's response, even
+    when it's wrapped in markdown fences, has leading/trailing prose, or
+    has trailing garbage/stray extra braces after the real object ends.
+    Tries progressively more permissive strategies:
+      1. Strip ```json fences, attempt a direct parse (the common case).
+      2. Balanced-brace scan (string-aware) for the first complete {...}
+         object — correctly handles nested objects and safely ignores
+         anything before/after the real JSON, which a greedy regex can't.
+      3. Last-resort greedy regex (\\{.*\\}) as a final attempt in case the
+         balanced scan finds nothing (e.g. a genuinely truncated response).
+    """
+    stripped = text.strip()
+    cleaned = re.sub(r"^```(?:json)?|```$", "", stripped, flags=re.MULTILINE).strip()
+
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                pass
+        pass
+
+    balanced = _extract_balanced_json(cleaned)
+    if balanced:
+        try:
+            return json.loads(balanced)
+        except json.JSONDecodeError:
+            pass
+
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
     logger.error("Could not parse JSON from Gemini response: %s", text[:300])
     return None
 
