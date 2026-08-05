@@ -82,6 +82,7 @@ FETCH_PROJECT_TAGS = os.getenv("FETCH_PROJECT_TAGS", "true").strip().lower() in 
 
 # ---- Matching / scoring -------------------------------------------------------
 MY_SKILLS = [
+    # --- English Skills (Original) ---
     "Python",
     "Data Science",
     "Machine Learning",
@@ -94,6 +95,21 @@ MY_SKILLS = [
     "Object-Oriented Programming (OOP)",
     "MATLAB",
     "Document Formatting",
+    
+    # --- Arabic Equivalents & Mostaql Tags ---
+    "بايثون",
+    "برمجة",
+    "تطوير الويب",
+    "تطوير تطبيقات",
+    "تطوير تطبيقات الهواتف الذكية",
+    "هندسة البرمجيات",
+    "أنظمة مدمجة",
+    "علوم البيانات",
+    "تعلم الآلة",
+    "تطوير واجهات",
+    "برمجة مواقع",
+    "تطوير البرمجيات",
+    "تصميم عروض تقديمية"
 ]
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
 
