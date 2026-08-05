@@ -8,6 +8,17 @@ Uses Google Gemini (google-generativeai) to:
 
 Both calls ask Gemini to return strict JSON so the rest of the pipeline can
 consume the result programmatically without brittle regex parsing.
+
+MODEL FALLBACK
+---------------
+Google periodically retires model IDs — all gemini-1.5-* models are already
+fully shut down (404), and gemini-2.0-flash / gemini-2.0-flash-lite were
+also shut down as of June 1, 2026. To stop a single deprecation from taking
+the bot down again, every call goes through `_generate_with_fallback()`,
+which tries each model in `config.GEMINI_MODELS` (in order) until one
+succeeds. It also remembers which model last worked (module-level cache) so
+subsequent calls try the known-good model first instead of re-discovering
+it from scratch every time.
 """
 
 import json
@@ -32,8 +43,60 @@ class Evaluation:
     proposal_ar: Optional[str] = None
 
 
-def _get_model():
-    return genai.GenerativeModel(config.GEMINI_MODEL)
+# Module-level cache of which model in config.GEMINI_MODELS last worked, so
+# we don't re-try already-known-dead models first on every single call. This
+# is safe without locking because main.py runs cycles one at a time on a
+# single worker thread (see main.py's ThreadPoolExecutor(max_workers=1)).
+_working_model_index = 0
+
+
+def _generate_with_fallback(prompt: str):
+    """
+    Tries each model in config.GEMINI_MODELS, starting from the last known
+    working one, until one successfully returns a response. Raises the last
+    exception encountered only if every model in the chain fails.
+    """
+    global _working_model_index
+
+    if not config.GEMINI_MODELS:
+        raise RuntimeError("config.GEMINI_MODELS is empty — no Gemini model configured")
+
+    n = len(config.GEMINI_MODELS)
+    # Try the cached "known good" model first, then cycle through the rest.
+    order = [(_working_model_index + i) % n for i in range(n)]
+
+    last_exc: Optional[Exception] = None
+    for idx in order:
+        model_name = config.GEMINI_MODELS[idx]
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                request_options={"timeout": config.GEMINI_TIMEOUT},
+            )
+
+            if idx != _working_model_index:
+                logger.warning(
+                    "Gemini model '%s' failed earlier this call chain — "
+                    "switched to and succeeded with '%s'",
+                    config.GEMINI_MODELS[_working_model_index], model_name,
+                )
+            _working_model_index = idx
+            return response
+
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Gemini model '%s' failed (%s: %s) — trying next fallback model in chain",
+                model_name, type(exc).__name__, exc,
+            )
+            continue
+
+    logger.error(
+        "All %s Gemini model(s) in the fallback chain failed. Last error: %s",
+        n, last_exc, exc_info=True,
+    )
+    raise last_exc if last_exc else RuntimeError("No Gemini models available")
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -42,7 +105,6 @@ def _extract_json(text: str) -> Optional[dict]:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # Fallback: try to find the first {...} block
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
             try:
@@ -74,19 +136,13 @@ exact shape:
 }}
 """
     try:
-        model = _get_model()
-        # CRITICAL: request_options timeout — without this the SDK call can
-        # hang indefinitely on a stalled connection with no error raised.
-        response = model.generate_content(
-            prompt,
-            request_options={"timeout": config.GEMINI_TIMEOUT},
-        )
+        response = _generate_with_fallback(prompt)
         data = _extract_json(response.text)
         if data is None or "match_score" not in data:
             return None
         return data
     except Exception as exc:
-        logger.error("Gemini scoring call failed: %s", exc, exc_info=True)
+        logger.error("Gemini scoring call failed on every model in the fallback chain: %s", exc, exc_info=True)
         return None
 
 
@@ -111,15 +167,11 @@ def draft_proposal(title: str, description: str, budget: Optional[str] = None) -
 - لا تضع أي عناوين أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ.
 """
     try:
-        model = _get_model()
-        response = model.generate_content(
-            prompt,
-            request_options={"timeout": config.GEMINI_TIMEOUT},
-        )
+        response = _generate_with_fallback(prompt)
         text = response.text.strip()
         return text if text else None
     except Exception as exc:
-        logger.error("Gemini proposal drafting failed: %s", exc, exc_info=True)
+        logger.error("Gemini proposal drafting failed on every model in the fallback chain: %s", exc, exc_info=True)
         return None
 
 
