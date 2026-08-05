@@ -1,24 +1,27 @@
 """
 ai_agent.py
 -----------
-Uses Google Gemini (google-generativeai) to:
-  1. Score how well a project matches the freelancer's skill set (0-100).
+Uses Google's new unified Gen AI SDK (`google-genai`, imported as
+`from google import genai`) to:
+  1. Score how well a project matches the freelancer's skill set (0-100),
+     and estimate a suggested bid price and delivery time.
   2. If the score clears the threshold, draft a persuasive, customized
      proposal in Arabic based on the project's specific details.
 
-Both calls ask Gemini to return strict JSON so the rest of the pipeline can
-consume the result programmatically without brittle regex parsing.
+SDK NOTE: this replaces the old, now end-of-life `google.generativeai`
+package with the current `google.genai` package. Per your request, this
+uses a single stable model (config.GEMINI_MODEL, default "gemini-3.5-flash")
+directly with no fallback chain.
 
-MODEL FALLBACK
----------------
-Google periodically retires model IDs — all gemini-1.5-* models are already
-fully shut down (404), and gemini-2.0-flash / gemini-2.0-flash-lite were
-also shut down as of June 1, 2026. To stop a single deprecation from taking
-the bot down again, every call goes through `_generate_with_fallback()`,
-which tries each model in `config.GEMINI_MODELS` (in order) until one
-succeeds. It also remembers which model last worked (module-level cache) so
-subsequent calls try the known-good model first instead of re-discovering
-it from scratch every time.
+TIMEOUT CAVEAT (important — please read): `google-genai`'s http_options
+timeout is known to be unreliable in some versions of the SDK — there are
+open upstream bugs where requests can hang indefinitely even with a timeout
+configured (e.g. googleapis/python-genai#1893, #911). We still set it
+below as a first line of defense, but the actual guarantee that this bot
+can never hang forever comes from main.py's CYCLE_TIMEOUT watchdog
+(ThreadPoolExecutor + future.result(timeout=...)), which is untouched by
+this change. Don't remove that watchdog even if this SDK's own timeout
+seems to be working — it's the real safety net.
 """
 
 import json
@@ -27,76 +30,40 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 import config
 
 logger = logging.getLogger("ai_agent")
 
-genai.configure(api_key=config.GEMINI_API_KEY)
+# http_options timeout is in MILLISECONDS for this SDK.
+_client = genai.Client(
+    api_key=config.GEMINI_API_KEY,
+    http_options=types.HttpOptions(timeout=config.GEMINI_TIMEOUT * 1000),
+)
 
 
 @dataclass
 class Evaluation:
     match_score: float
     reasoning: str
+    suggested_price: Optional[str] = None
+    delivery_days: Optional[int] = None
     proposal_ar: Optional[str] = None
 
 
-# Module-level cache of which model in config.GEMINI_MODELS last worked, so
-# we don't re-try already-known-dead models first on every single call. This
-# is safe without locking because main.py runs cycles one at a time on a
-# single worker thread (see main.py's ThreadPoolExecutor(max_workers=1)).
-_working_model_index = 0
-
-
-def _generate_with_fallback(prompt: str):
-    """
-    Tries each model in config.GEMINI_MODELS, starting from the last known
-    working one, until one successfully returns a response. Raises the last
-    exception encountered only if every model in the chain fails.
-    """
-    global _working_model_index
-
-    if not config.GEMINI_MODELS:
-        raise RuntimeError("config.GEMINI_MODELS is empty — no Gemini model configured")
-
-    n = len(config.GEMINI_MODELS)
-    # Try the cached "known good" model first, then cycle through the rest.
-    order = [(_working_model_index + i) % n for i in range(n)]
-
-    last_exc: Optional[Exception] = None
-    for idx in order:
-        model_name = config.GEMINI_MODELS[idx]
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt,
-                request_options={"timeout": config.GEMINI_TIMEOUT},
-            )
-
-            if idx != _working_model_index:
-                logger.warning(
-                    "Gemini model '%s' failed earlier this call chain — "
-                    "switched to and succeeded with '%s'",
-                    config.GEMINI_MODELS[_working_model_index], model_name,
-                )
-            _working_model_index = idx
-            return response
-
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                "Gemini model '%s' failed (%s: %s) — trying next fallback model in chain",
-                model_name, type(exc).__name__, exc,
-            )
-            continue
-
-    logger.error(
-        "All %s Gemini model(s) in the fallback chain failed. Last error: %s",
-        n, last_exc, exc_info=True,
+def _generate(prompt: str, json_mode: bool = False):
+    """Thin wrapper around client.models.generate_content with the single
+    configured model. json_mode=True asks Gemini to emit raw JSON directly
+    (in addition to the prompt's own instructions), which reduces — but
+    doesn't eliminate — the chance of markdown-fenced output."""
+    gen_config = types.GenerateContentConfig(response_mime_type="application/json") if json_mode else None
+    return _client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=prompt,
+        config=gen_config,
     )
-    raise last_exc if last_exc else RuntimeError("No Gemini models available")
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -116,12 +83,16 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def score_project(title: str, description: str) -> Optional[dict]:
-    """Step 1: ask Gemini for a match score + short reasoning. Returns None on failure."""
+    """
+    Step 1: ask Gemini for a match score, reasoning, a suggested bid price,
+    and an estimated delivery time. Returns None on failure.
+    """
     skills_list = ", ".join(config.MY_SKILLS)
 
     prompt = f"""
 You are an expert freelance-bidding assistant. Compare the project below
-against the freelancer's skill set and estimate how good a match it is.
+against the freelancer's skill set, estimate how good a match it is, and
+recommend a realistic bid.
 
 Freelancer skills: {skills_list}
 
@@ -132,17 +103,22 @@ Respond with ONLY a raw JSON object (no markdown, no extra text) in this
 exact shape:
 {{
   "match_score": <integer 0-100>,
-  "reasoning": "<one short sentence in English explaining the score>"
+  "reasoning": "<one short sentence in English explaining the score>",
+  "suggested_price": "<a realistic recommended bid price/budget for this
+                        project's scope, as a short string including
+                        currency, e.g. '$150' or '$300-400'>",
+  "delivery_days": <integer, realistic number of days to complete the
+                     project based on its scope>
 }}
 """
     try:
-        response = _generate_with_fallback(prompt)
+        response = _generate(prompt, json_mode=True)
         data = _extract_json(response.text)
         if data is None or "match_score" not in data:
             return None
         return data
     except Exception as exc:
-        logger.error("Gemini scoring call failed on every model in the fallback chain: %s", exc, exc_info=True)
+        logger.error("Gemini scoring call failed: %s", exc, exc_info=True)
         return None
 
 
@@ -167,19 +143,20 @@ def draft_proposal(title: str, description: str, budget: Optional[str] = None) -
 - لا تضع أي عناوين أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ.
 """
     try:
-        response = _generate_with_fallback(prompt)
+        response = _generate(prompt)
         text = response.text.strip()
         return text if text else None
     except Exception as exc:
-        logger.error("Gemini proposal drafting failed on every model in the fallback chain: %s", exc, exc_info=True)
+        logger.error("Gemini proposal drafting failed: %s", exc, exc_info=True)
         return None
 
 
 def evaluate_project(title: str, description: str, budget: Optional[str] = None) -> Evaluation:
     """
-    Full pipeline for one project: score it, and if it clears the threshold,
-    draft a proposal too. Always returns an Evaluation object — never raises —
-    so main.py's loop can rely on it unconditionally.
+    Full pipeline for one project: score it (including price/duration
+    estimates), and if it clears the threshold, draft a proposal too.
+    Always returns an Evaluation object — never raises — so main.py's loop
+    can rely on it unconditionally.
     """
     score_data = score_project(title, description)
     if score_data is None:
@@ -187,9 +164,21 @@ def evaluate_project(title: str, description: str, budget: Optional[str] = None)
 
     score = float(score_data.get("match_score", 0))
     reasoning = score_data.get("reasoning", "")
+    suggested_price = score_data.get("suggested_price")
+    delivery_days = score_data.get("delivery_days")
+    try:
+        delivery_days = int(delivery_days) if delivery_days is not None else None
+    except (TypeError, ValueError):
+        delivery_days = None
 
     proposal = None
     if score > config.MATCH_THRESHOLD:
         proposal = draft_proposal(title, description, budget)
 
-    return Evaluation(match_score=score, reasoning=reasoning, proposal_ar=proposal)
+    return Evaluation(
+        match_score=score,
+        reasoning=reasoning,
+        suggested_price=suggested_price,
+        delivery_days=delivery_days,
+        proposal_ar=proposal,
+    )

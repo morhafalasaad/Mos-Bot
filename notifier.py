@@ -27,12 +27,24 @@ def _escape_markdown(text: str) -> str:
     return text
 
 
-def build_message(title: str, url: str, score: float, proposal_ar: str, budget: str = None) -> str:
-    budget_line = f"\n💰 *الميزانية:* {_escape_markdown(budget)}" if budget else ""
+def build_message(
+    title: str,
+    url: str,
+    score: float,
+    proposal_ar: str,
+    budget: str = None,
+    suggested_price: str = None,
+    delivery_days: int = None,
+) -> str:
+    price_line = f"\n💵 *السعر المقترح:* {_escape_markdown(str(suggested_price))}" if suggested_price else ""
+    days_line = f"\n⏱ *مدة التسليم المتوقعة:* {delivery_days} يوم" if delivery_days else ""
+    budget_line = f"\n💰 *ميزانية العميل:* {_escape_markdown(budget)}" if budget else ""
     return (
         f"🆕 *مشروع جديد مطابق*\n\n"
         f"📌 *العنوان:* {_escape_markdown(title)}\n"
         f"📊 *نسبة التطابق:* {score:.0f}%"
+        f"{price_line}"
+        f"{days_line}"
         f"{budget_line}\n"
         f"🔗 *الرابط:* {url}\n\n"
         f"✍️ *مسودة العرض المقترح:*\n{proposal_ar}\n\n"
@@ -46,7 +58,10 @@ def send_telegram_message(text: str) -> bool:
         "chat_id": config.TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
+        # True removes Telegram's link-preview card (the blue box with the
+        # site logo/title) that otherwise renders under the message for the
+        # Mostaql URL — keeps the notification compact.
+        "disable_web_page_preview": True,
     }
     try:
         resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
@@ -69,8 +84,16 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 
-def notify_matched_project(title: str, url: str, score: float, proposal_ar: str, budget: str = None):
-    message = build_message(title, url, score, proposal_ar, budget)
+def notify_matched_project(
+    title: str,
+    url: str,
+    score: float,
+    proposal_ar: str,
+    budget: str = None,
+    suggested_price: str = None,
+    delivery_days: int = None,
+):
+    message = build_message(title, url, score, proposal_ar, budget, suggested_price, delivery_days)
     send_telegram_message(message)
 
 

@@ -84,8 +84,9 @@ def run_cycle():
             )
 
             logger.info(
-                "Match score for '%s': %.0f%% (%s)",
+                "Match score for '%s': %.0f%% (%s) | suggested price: %s | delivery: %s day(s)",
                 project.title, evaluation.match_score, evaluation.reasoning,
+                evaluation.suggested_price, evaluation.delivery_days,
             )
 
             if evaluation.match_score > config.MATCH_THRESHOLD and evaluation.proposal_ar:
@@ -95,6 +96,8 @@ def run_cycle():
                     score=evaluation.match_score,
                     proposal_ar=evaluation.proposal_ar,
                     budget=project.budget,
+                    suggested_price=evaluation.suggested_price,
+                    delivery_days=evaluation.delivery_days,
                 )
             else:
                 logger.info("Below threshold (%.0f%%) — skipping notification", config.MATCH_THRESHOLD)
