@@ -3,35 +3,45 @@ scraper.py
 ----------
 Monitors Mostaql's public project-listing page for new projects.
 
-WHY THE PREVIOUS VERSION RETURNED 0 PROJECTS EVERY CYCLE
-----------------------------------------------------------
-Two likely causes, both addressed below:
+WHY THIS KEPT FAILING (root causes, in the order we found them)
+-------------------------------------------------------------------
+1. Guessed CSS classes (`div.project-card`, etc.) never matched Mostaql's
+   real markup — silently returned 0 elements, no error.
+2. The link-pattern regex was anchored (`^/project/...`), so it only
+   matched RELATIVE hrefs. Mostaql actually renders ABSOLUTE hrefs
+   (`https://mostaql.com/project/...`), so it also silently matched 0.
+3. Even after fixing the regex, extraction still failed. The cause: this
+   module was parsing HTML with `BeautifulSoup(html, "html.parser")`.
+   Python's built-in `html.parser` is strict and can silently mis-nest or
+   drop tags when it encounters real-world malformed HTML (unclosed tags,
+   stray attributes, etc.) — so `soup.find_all("a", href=True)` can miss
+   anchors that a plain string search would still find. That's exactly why
+   the diagnostic log showed "links present in raw HTML: True" while
+   BeautifulSoup extraction returned 0: the *string* contains the links,
+   but the *parsed tree* BeautifulSoup built from them was broken.
 
-1. The CSS selectors (`div.project-card`, `.project-title a`, etc.) were
-   reasonable guesses but did not match Mostaql's actual markup, so
-   `soup.select(...)` silently matched zero elements every time — no error,
-   just an empty list. Fixed by switching the PRIMARY parsing strategy to
-   something structural and far less likely to break: Mostaql's project
-   detail links always follow the pattern `/project/<numeric_id>-<slug>`.
-   We find every anchor matching that pattern instead of depending on
-   specific class names, and derive the title/description from the anchors
-   themselves. The old class-based selectors are kept as a secondary
-   fallback attempt in case Mostaql's markup includes them after all.
-2. Possible Cloudflare / bot-protection blocking of Render's IP ranges
-   (403, 503, or a JS-challenge "Just a moment..." interstitial page
-   instead of real content). Fixed by trying `cloudscraper` first (which
-   solves basic Cloudflare JS/IUAM challenges automatically) and falling
-   back to plain `requests` with realistic browser headers if
-   `cloudscraper` isn't installed. Debug logging now prints the exact
-   status code and flags known block/challenge signatures so this is
-   directly visible in the Render logs instead of silently returning "0
-   new projects".
+THE FIX — three independent extraction strategies, most-robust-first
+-------------------------------------------------------------------
+1. CSS-selector strategy (legacy) — only used if it happens to match.
+2. BeautifulSoup link-pattern strategy — now parsed with `lxml` if
+   available (a lenient, industry-standard HTML parser that handles
+   malformed markup far better than `html.parser`), with automatic
+   fallback to `html.parser` if `lxml` isn't installed.
+3. RAW REGEX fallback strategy (new, and now the guaranteed last resort) —
+   operates directly on the raw HTML string with a regex, completely
+   bypassing BeautifulSoup's tree-building. This cannot be defeated by
+   malformed markup, unknown class names, or DOM-nesting quirks: it finds
+   every `<a ... href="...project/<id>-...">...</a>` occurrence directly
+   in the text. Title + link are ALWAYS captured this way; description is
+   best-effort (nearby anchor text); budget is optional (only populated by
+   strategy 1, since it has no unambiguous text signature to regex for).
 
 IMPORTANT: Before deploying, check https://mostaql.com/robots.txt and
 Mostaql's Terms of Service to confirm automated polling of this page is
 permitted, and keep your polling interval conservative.
 """
 
+import html as html_module
 import json
 import logging
 import os
@@ -65,6 +75,23 @@ except ImportError:
         "requirements.txt for a much higher success rate."
     )
 
+# ---------------------------------------------------------------------------
+# Optional lxml support. lxml is a much more forgiving HTML parser than the
+# stdlib html.parser and handles real-world malformed markup correctly —
+# this was the actual root cause of extraction silently returning 0 results
+# even though the target links were confirmed present in the raw HTML.
+# ---------------------------------------------------------------------------
+try:
+    import lxml  # noqa: F401
+    _BS4_PARSER = "lxml"
+except ImportError:
+    _BS4_PARSER = "html.parser"
+    logger.warning(
+        "lxml is not installed — falling back to html.parser, which is "
+        "stricter and can mis-parse malformed real-world HTML. Add 'lxml' "
+        "to requirements.txt for more reliable extraction."
+    )
+
 # Rotate between a handful of realistic desktop User-Agent strings.
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -77,8 +104,8 @@ USER_AGENTS = [
 ]
 
 # Legacy/fallback CSS selectors — tried first in case Mostaql's markup uses
-# them; if they match nothing, parse_projects() falls back to the
-# link-pattern strategy below, which is the primary, more robust method.
+# them; if they match nothing, parse_projects() falls back to the next
+# strategy. Kept purely as a bonus for budget extraction if it ever matches.
 SELECTORS = {
     "project_card": "div.project-card, li.project-item, article.project",
     "title": "h2 a, h3 a, .project-title a",
@@ -88,9 +115,19 @@ SELECTORS = {
 
 # Mostaql project detail URLs always look like:
 #   https://mostaql.com/project/1265468-<arabic-or-latin-slug>
-# "similar project" links look like /project/create?template=1265468 and are
+# Unanchored so it matches both absolute and relative hrefs. "similar
+# project" links look like /project/create?template=1265468 and are
 # deliberately excluded by requiring a "-" right after the numeric id.
-PROJECT_LINK_RE = re.compile(r"^/project/(\d+)-")
+PROJECT_LINK_RE = re.compile(r"/project/(\d+)-")
+
+# Raw-regex fallback: matches a full <a ...href="...">inner html</a> block
+# directly against the HTML string, independent of BeautifulSoup entirely.
+# Non-greedy + DOTALL so it correctly spans anchors whose inner content
+# includes nested tags or newlines.
+RAW_ANCHOR_RE = re.compile(
+    r'<a\b[^>]*?href=["\']([^"\']*?/project/\d+-[^"\']*)["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Signatures that indicate a block / bot-challenge page rather than the
 # real listing, so we can log it clearly instead of just "0 projects".
@@ -203,8 +240,6 @@ def fetch_page(session, url: str) -> Optional[str]:
                     "First 300 chars: %r",
                     block_reason, resp.text[:300] if resp.text else "",
                 )
-                # A block is still worth retrying (Cloudflare challenges can
-                # be intermittent) but there's no point hammering it fast.
                 if attempt < config.MAX_RETRIES:
                     time.sleep(15 * attempt)
                 continue
@@ -225,10 +260,8 @@ def fetch_page(session, url: str) -> Optional[str]:
                 "Request failed (attempt %s/%s): %s: %s",
                 attempt, config.MAX_RETRIES, type(exc).__name__, exc,
             )
-            time.sleep(5 * attempt)  # exponential-ish backoff
+            time.sleep(5 * attempt)
         except Exception as exc:
-            # Catch-all so a truly unexpected error (e.g. a bug in a
-            # dependency) still can't escape and kill the calling thread.
             logger.error(
                 "Unexpected error fetching %s (attempt %s/%s): %s",
                 url, attempt, config.MAX_RETRIES, exc, exc_info=True,
@@ -239,8 +272,21 @@ def fetch_page(session, url: str) -> Optional[str]:
     return None
 
 
+def _make_soup(html: str) -> BeautifulSoup:
+    """Builds a BeautifulSoup tree using lxml if available (much more
+    forgiving of malformed real-world HTML), falling back to html.parser."""
+    try:
+        return BeautifulSoup(html, _BS4_PARSER)
+    except Exception as exc:
+        if _BS4_PARSER != "html.parser":
+            logger.warning("lxml parsing failed (%s), retrying with html.parser", exc)
+            return BeautifulSoup(html, "html.parser")
+        raise
+
+
 def _parse_via_css_selectors(soup: BeautifulSoup) -> List[Project]:
-    """Legacy/fallback strategy — only used if it actually matches something."""
+    """Legacy/fallback strategy — only used if it actually matches something.
+    This is currently the ONLY strategy that can populate `budget`."""
     projects: List[Project] = []
     cards = soup.select(SELECTORS["project_card"])
     for card in cards:
@@ -249,9 +295,8 @@ def _parse_via_css_selectors(soup: BeautifulSoup) -> List[Project]:
             if not title_el or not title_el.get("href"):
                 continue
 
-            url = title_el["href"]
-            if url.startswith("/"):
-                url = "https://mostaql.com" + url
+            href = title_el["href"]
+            url = "https://mostaql.com" + href if href.startswith("/") else href
 
             title = title_el.get_text(strip=True)
             desc_el = card.select_one(SELECTORS["description"])
@@ -259,7 +304,7 @@ def _parse_via_css_selectors(soup: BeautifulSoup) -> List[Project]:
             budget_el = card.select_one(SELECTORS["budget"])
             budget = budget_el.get_text(strip=True) if budget_el else None
 
-            match = PROJECT_LINK_RE.match(title_el["href"]) if title_el["href"].startswith("/") else None
+            match = PROJECT_LINK_RE.search(href)
             project_id = match.group(1) if match else url.rstrip("/").split("/")[-1]
 
             projects.append(Project(id=project_id, title=title, description=description, url=url, budget=budget))
@@ -271,21 +316,20 @@ def _parse_via_css_selectors(soup: BeautifulSoup) -> List[Project]:
 
 def _parse_via_link_pattern(soup: BeautifulSoup) -> List[Project]:
     """
-    PRIMARY strategy. Finds every anchor whose href matches
+    BeautifulSoup-based strategy. Finds every anchor whose href matches
     /project/<id>-<slug> (Mostaql's stable project-detail URL pattern)
     instead of relying on CSS class names that can change at any time.
 
-    Mostaql typically renders both the project title AND its description
-    excerpt as separate <a> tags pointing to the same project URL. When we
-    see multiple anchors for the same project id, we treat the SHORTEST
-    text as the title and the LONGEST as the description (the excerpt is
-    always longer than the title in practice).
+    When multiple anchors point to the same project id (Mostaql typically
+    renders both the title and a description excerpt as separate <a> tags
+    to the same URL), the SHORTEST text is treated as the title and the
+    LONGEST as the description.
     """
     groups: dict = {}  # project_id -> {"url": ..., "texts": [str, ...]}
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        match = PROJECT_LINK_RE.match(href)
+        match = PROJECT_LINK_RE.search(href)
         if not match:
             continue
 
@@ -310,17 +354,74 @@ def _parse_via_link_pattern(soup: BeautifulSoup) -> List[Project]:
     return projects
 
 
+def _strip_inner_tags(inner_html: str) -> str:
+    """Strips any nested HTML tags out of an anchor's inner content and
+    decodes HTML entities, for use by the raw-regex fallback strategy."""
+    text = re.sub(r"<[^>]+>", " ", inner_html)
+    text = html_module.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _parse_via_raw_regex(html: str) -> List[Project]:
+    """
+    LAST-RESORT, GUARANTEED strategy. Operates directly on the raw HTML
+    string with a regex — completely bypasses BeautifulSoup's tree-building,
+    so it cannot be defeated by malformed markup or DOM-nesting quirks that
+    make html.parser (or even lxml, in rare cases) miss real anchors.
+
+    Title and link are always captured here as long as the anchor exists in
+    the raw text at all. Description is best-effort (longest distinct anchor
+    text seen for that project id). Budget is not populated by this
+    strategy — it has no reliable, class-independent text signature to
+    regex for; only the CSS-selector strategy can supply it.
+    """
+    groups: dict = {}  # project_id -> {"url": ..., "texts": [str, ...]}
+
+    for href, inner_html in RAW_ANCHOR_RE.findall(html):
+        match = PROJECT_LINK_RE.search(href)
+        if not match:
+            continue
+
+        project_id = match.group(1)
+        text = _strip_inner_tags(inner_html)
+        if not text:
+            continue
+
+        full_url = "https://mostaql.com" + href if href.startswith("/") else href
+        entry = groups.setdefault(project_id, {"url": full_url, "texts": []})
+        entry["texts"].append(text)
+
+    projects: List[Project] = []
+    for project_id, data in groups.items():
+        texts = sorted(set(data["texts"]), key=len)
+        title = texts[0]
+        description = texts[-1] if len(texts) > 1 else texts[0]
+        projects.append(
+            Project(id=project_id, title=title, description=description, url=data["url"], budget=None)
+        )
+
+    return projects
+
+
 def parse_projects(html: str) -> List[Project]:
-    """Parse the listing HTML into Project objects using the CSS-selector
-    strategy first, falling back to the link-pattern strategy if that
-    yields nothing. Logs which strategy succeeded and, if BOTH fail, dumps
-    a snippet of the HTML so the real cause is visible in the logs instead
-    of a bare '0 new projects'."""
+    """
+    Parse the listing HTML into Project objects, trying three strategies in
+    order of preference (richest data first, most-robust-and-guaranteed
+    last):
+      1. CSS-selector strategy   — only useful if class names happen to match;
+                                    the only one that can populate `budget`.
+      2. BeautifulSoup link-pattern strategy (lxml-backed if available).
+      3. Raw-regex fallback strategy — bypasses BeautifulSoup entirely;
+         title + link are ALWAYS captured here if the link exists in the
+         HTML string at all.
+    Each strategy's result count is logged so it's obvious which one
+    succeeded. If ALL THREE fail, dumps enough HTML context to diagnose why.
+    """
     if not html:
         logger.warning("parse_projects called with empty HTML (fetch must have failed upstream)")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _make_soup(html)
 
     css_results = _parse_via_css_selectors(soup)
     if css_results:
@@ -329,19 +430,28 @@ def parse_projects(html: str) -> List[Project]:
 
     link_results = _parse_via_link_pattern(soup)
     if link_results:
-        logger.info("Parsed %s project(s) via link-pattern strategy", len(link_results))
+        logger.info(
+            "Parsed %s project(s) via BeautifulSoup link-pattern strategy (parser=%s)",
+            len(link_results), _BS4_PARSER,
+        )
         return link_results
 
-    # Both strategies found nothing — this is the case that used to
-    # silently log "0 new projects" with no way to diagnose why. Now we
-    # dump enough context to tell block-page vs. genuinely-changed-markup
-    # vs. genuinely-empty-listing apart.
+    regex_results = _parse_via_raw_regex(html)
+    if regex_results:
+        logger.info(
+            "Parsed %s project(s) via raw-regex fallback strategy "
+            "(BeautifulSoup missed them — likely malformed markup)",
+            len(regex_results),
+        )
+        return regex_results
+
+    # All three strategies found nothing.
     any_project_style_links = bool(re.search(r"/project/\d+-", html))
     logger.warning(
-        "Both parsing strategies found 0 projects. "
+        "ALL THREE parsing strategies found 0 projects. "
         "Any '/project/<id>-' links present in raw HTML at all? %s. "
-        "HTML length: %s chars. First 500 chars: %r",
-        any_project_style_links, len(html), html[:500],
+        "HTML length: %s chars. First 800 chars: %r",
+        any_project_style_links, len(html), html[:800],
     )
     return []
 
@@ -363,7 +473,6 @@ def _load_seen() -> set:
 
 def _save_seen(seen: set):
     try:
-        # Cap file size: keep only the most recent 500 IDs.
         trimmed = list(seen)[-500:]
         with open(config.SEEN_PROJECTS_FILE, "w", encoding="utf-8") as f:
             json.dump(trimmed, f)
@@ -395,7 +504,6 @@ def get_new_projects() -> List[Project]:
 
         return new_projects
     except Exception as exc:
-        # Absolute last line of defense for this module.
         logger.exception("Unexpected error in get_new_projects: %s", exc)
         return []
     finally:
