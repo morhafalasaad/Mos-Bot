@@ -490,25 +490,71 @@ exact shape:
         return None
 
 
-def draft_proposal(title: str, description: str, budget: Optional[str] = None) -> Optional[str]:
-    """Step 2 (only called if score > threshold): draft an Arabic proposal."""
+def draft_proposal(
+    title: str,
+    description: str,
+    budget: Optional[str] = None,
+    suggested_price: Optional[str] = None,
+    delivery_days: Optional[int] = None,
+) -> Optional[str]:
+    """
+    Step 2 (only called if score >= threshold): draft an Arabic proposal
+    following Mostaql's professional-proposal standards.
+
+    IMPORTANT: suggested_price/delivery_days are the SAME figures already
+    computed by score_project() and shown in the Telegram notification —
+    passing them in here (rather than letting this separate Gemini call
+    invent its own numbers) is what guarantees the price/timeline quoted
+    INSIDE the proposal text always matches what you see in Telegram.
+    Without this, the two calls could independently land on different
+    numbers, which would be exactly the kind of inconsistency/broken-promise
+    this function is meant to avoid.
+    """
     skills_list = ", ".join(config.MY_SKILLS)
-    budget_line = f"\nProject budget: {budget}" if budget else ""
+    budget_line = f"\nميزانية العميل المعلنة: {budget}" if budget else ""
+    price_line = (
+        f"\nالسعر الذي يجب ذكره في العرض: {suggested_price}"
+        if suggested_price else
+        "\n(لم يتوفر سعر مقترح مسبقاً — اقترح سعراً واقعياً ومنطقياً بناءً على حجم المشروع، ولا تكتب رقماً وهمياً أو رمزياً مثل 1$.)"
+    )
+    days_line = (
+        f"\nمدة التسليم التي يجب ذكرها في العرض: {delivery_days} يوم"
+        if delivery_days else
+        "\n(لم تتوفر مدة تسليم مقترحة مسبقاً — اقترح مدة واقعية بناءً على حجم المشروع.)"
+    )
 
     prompt = f"""
 أنت مساعد كتابة عروض احترافي لمستقل يعمل على منصة مستقل (Mostaql).
 مهارات المستقل: {skills_list}
 
 عنوان المشروع: {title}
-وصف المشروع: {description}{budget_line}
+وصف المشروع: {description}{budget_line}{price_line}{days_line}
 
-اكتب عرضاً احترافياً ومقنعاً باللغة العربية الفصحى لتقديمه على هذا المشروع، بحيث:
-- يبدأ بجملة تُظهر فهماً دقيقاً لاحتياج العميل المحدد في وصف المشروع.
-- يبرز الخبرات ذات الصلة المباشرة بالمشروع فقط من بين مهارات المستقل.
-- يقترح خطوات عمل أو منهجية مختصرة لتنفيذ المشروع.
-- يكون بأسلوب واثق ومهني، دون مبالغة أو عبارات عامة جاهزة.
-- طوله لا يتجاوز 150 كلمة.
-- لا تضع أي عناوين أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ.
+اكتب عرضاً احترافياً ومقنعاً باللغة العربية الفصحى لتقديمه على هذا المشروع،
+ملتزماً حرفياً بالبنية التالية (بدون كتابة عناوين الأقسام نفسها في النص،
+اجعلها تتدفق كعرض واحد متماسك):
+
+1. تحية ومقدمة موجزة: تحية مهنية مختصرة ومقدمة سريعة عن نفسك كمستقل مختص.
+2. إثبات فهم عميق للمشروع: جملة أو جملتان تُظهران فهماً دقيقاً ومحدداً لاحتياج
+   العميل كما ورد في وصف المشروع تحديداً (وليس فهماً عاماً يصلح لأي مشروع).
+3. خطة عمل: خطوات تنفيذ مختصرة ومنظمة (2-4 خطوات) تبني الثقة بأن لديك منهجية
+   واضحة، لا مجرد وعود عامة.
+4. السعر ومدة التسليم: اذكر السعر ومدة التسليم المحددين أعلاه بالضبط — لا
+   تخترع رقماً مختلفاً عنهما تحت أي ظرف، فهما نفس الرقمين المرسلين للعميل
+   لاحقاً في نفس الصفقة.
+5. القيمة المضافة (لماذا تختارني): أبرز الخبرات ذات الصلة المباشرة بهذا
+   المشروع تحديداً فقط من بين مهارات المستقل المذكورة أعلاه — لا تسرد كل
+   المهارات، فقط ما يخدم هذا المشروع.
+6. خاتمة احترافية: جملة ختامية مهنية تشجع العميل على التواصل أو طرح الأسئلة.
+
+قواعد صارمة يجب الالتزام بها:
+- ممنوع استخدام عبارات عامة جاهزة أو نص يصلح لأي مشروع آخر (لا نسخ ولصق).
+- ممنوع المبالغة أو تقديم وعود لا يمكن الوفاء بها بدقة — كن شفافاً وواقعياً
+  تماماً بخصوص ما يمكن تنفيذه.
+- ممنوع كتابة سعر وهمي أو رمزي (مثل 1$) — استخدم فقط السعر المحدد أعلاه.
+- أسلوب واثق ومهني دون تكلف.
+- طوله لا يتجاوز 180 كلمة.
+- لا تضع أي عناوين أقسام أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ مباشرة.
 """
     try:
         response = _generate(prompt)
@@ -575,7 +621,11 @@ def evaluate_project(
     # stricter than main.py's, a boundary-score project would clear the
     # notification check but still have no proposal to send.
     if score >= config.MATCH_THRESHOLD:
-        proposal = draft_proposal(title, description, budget)
+        proposal = draft_proposal(
+            title, description, budget,
+            suggested_price=suggested_price,
+            delivery_days=delivery_days,
+        )
 
     return Evaluation(
         match_score=score,
