@@ -119,10 +119,16 @@ def retry_pending_github_queue():
             if retry_count > config.GITHUB_QUEUE_MAX_RETRIES:
                 logger.warning(
                     "Pending project '%s' exceeded GITHUB_QUEUE_MAX_RETRIES (%s) — "
-                    "dropping from auto-retry queue (still on record in the original "
-                    "GitHub issue/file)",
+                    "dropping from auto-retry queue and closing its linked issue "
+                    "(if any) as given-up-on rather than leaving it open forever",
                     title, config.GITHUB_QUEUE_MAX_RETRIES,
                 )
+                if entry.get("issue_number"):
+                    github_fallback.close_issue(
+                        entry["issue_number"],
+                        comment=f"⚠️ تم التخلي عن إعادة المحاولة بعد تجاوز الحد الأقصى "
+                                f"({config.GITHUB_QUEUE_MAX_RETRIES} محاولة) دون نجاح تقييم AI.",
+                    )
                 queue_changed = True  # dropped -> queue file needs updating
                 continue
             entry["retry_count"] = retry_count
@@ -153,6 +159,16 @@ def retry_pending_github_queue():
                 "(%.0f%%, threshold %.0f%%) — no notification",
                 title, evaluation.match_score, config.MATCH_THRESHOLD,
             )
+        # Close the linked GitHub issue (if any) now that it's been properly
+        # resolved, so issues never pile up unclosed once handled — this is
+        # what "never processed twice" guarantees in practice: closing here
+        # AND retry_open_github_issues() skipping tracked issue numbers.
+        if entry.get("issue_number"):
+            github_fallback.close_issue(
+                entry["issue_number"],
+                comment=f"✅ تم إعادة تقييم المشروع تلقائياً بعد تجدد حصة Gemini. "
+                        f"نسبة التطابق: {evaluation.match_score:.0f}%",
+            )
         # Either way it's now been properly evaluated, so it's removed from
         # the queue by simply not being appended to updated_queue.
 
@@ -163,9 +179,90 @@ def retry_pending_github_queue():
         )
 
 
+def retry_open_github_issues():
+    """
+    Explicit "check open GitHub Issues, parse, re-evaluate, close" worker,
+    independent of the queue file above. Fetches issues labeled
+    'ai-unavailable' (i.e. only ones this bot created), parses the raw
+    project details back out of each issue's body, retries Gemini
+    evaluation, and closes the issue on success.
+
+    DEDUP: skips any issue number already tracked by an active queue entry
+    (github_fallback.load_pending_queue()'s issue_number field) — those are
+    already handled by retry_pending_github_queue() above, which closes
+    their linked issue itself on success. This guarantees a project never
+    gets evaluated twice in the same cycle just because it's referenced by
+    both mechanisms. What this DOES catch: an "orphaned" issue whose queue
+    entry is missing for any reason (e.g. the queue write failed even
+    though the issue creation succeeded) — a genuine safety net, not
+    redundant work.
+    """
+    issues = github_fallback.list_open_fallback_issues()
+    if not issues:
+        return
+
+    tracked_issue_numbers = {
+        entry.get("issue_number")
+        for entry in github_fallback.load_pending_queue()
+        if entry.get("issue_number")
+    }
+    orphaned = [i for i in issues if i.get("number") not in tracked_issue_numbers]
+    if not orphaned:
+        return
+
+    logger.info(
+        "Found %s open GitHub issue(s) not tracked by the queue — attempting re-evaluation",
+        len(orphaned),
+    )
+
+    for issue in orphaned:
+        issue_number = issue.get("number")
+        title = issue.get("title", "").replace(github_fallback.ISSUE_TITLE_PREFIX, "", 1).strip()
+        parsed = github_fallback.parse_issue_body(issue.get("body", ""))
+
+        try:
+            evaluation = ai_agent.evaluate_project(
+                title=title,
+                description=parsed.get("description", ""),
+                budget=parsed.get("budget"),
+                tags=parsed.get("tags") or [],
+            )
+        except Exception:
+            logger.error(
+                "Unexpected error re-evaluating GitHub issue #%s ('%s'):\n%s",
+                issue_number, title, traceback.format_exc(),
+            )
+            continue
+
+        if evaluation.ai_failed:
+            logger.info("GitHub issue #%s ('%s') still unavailable for re-evaluation — left open", issue_number, title)
+            continue
+
+        logger.info(
+            "GitHub issue #%s ('%s') successfully re-evaluated: %.0f%%",
+            issue_number, title, evaluation.match_score,
+        )
+        if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
+            notifier.notify_matched_project(
+                title=title,
+                url=parsed.get("url") or issue.get("html_url", ""),
+                score=evaluation.match_score,
+                proposal_ar=evaluation.proposal_ar,
+                budget=parsed.get("budget"),
+                suggested_price=evaluation.suggested_price,
+                delivery_days=evaluation.delivery_days,
+            )
+        github_fallback.close_issue(
+            issue_number,
+            comment=f"✅ تم إعادة تقييم المشروع تلقائياً بعد تجدد حصة Gemini. "
+                    f"نسبة التطابق: {evaluation.match_score:.0f}%",
+        )
+
+
 def run_cycle():
     """One full monitor -> evaluate -> notify pass. Never raises."""
     retry_pending_github_queue()
+    retry_open_github_issues()
 
     new_projects = scraper.get_new_projects()
     logger.info("Cycle fetched %s new project(s) to evaluate", len(new_projects))
@@ -190,9 +287,10 @@ def run_cycle():
             # in GEMINI_API_KEYS) — distinct from a successful call that just
             # scored the project low. Per requirements:
             #   1. No local storage — raw project data goes straight to
-            #      GitHub, both as a human-readable record (issue/file) AND
-            #      as a structured queue entry that retry_pending_github_queue()
-            #      reads back and re-evaluates automatically next cycle.
+            #      GitHub, both as a human-readable Issue record AND as a
+            #      structured queue entry, linked together via issue_number
+            #      so whichever mechanism resolves it first closes the issue
+            #      and the other skips it (see retry_open_github_issues).
             #   2. Instant Telegram alert with the raw scraped fields, since
             #      there's no AI score/proposal to report yet.
             #   3. Same inline "open project" button as a successful match.
@@ -204,17 +302,12 @@ def run_cycle():
                     duration=project.duration,
                     description=project.description,
                 )
-                saved_record = github_fallback.save_project_to_github(
-                    project,
-                    reason=f"Gemini API call failed: {evaluation.reasoning}",
-                )
-                queued = github_fallback.queue_project(
-                    project,
-                    reason=f"Gemini API call failed: {evaluation.reasoning}",
-                )
+                reason = f"Gemini API call failed: {evaluation.reasoning}"
+                saved_record, issue_number = github_fallback.save_project_to_github(project, reason=reason)
+                queued = github_fallback.queue_project(project, reason=reason, issue_number=issue_number)
                 logger.warning(
-                    "AI evaluation unavailable for '%s' — record saved: %s | queued for auto-retry: %s",
-                    project.title, saved_record, queued,
+                    "AI evaluation unavailable for '%s' — record saved: %s (issue #%s) | queued for auto-retry: %s",
+                    project.title, saved_record, issue_number, queued,
                 )
                 continue
 

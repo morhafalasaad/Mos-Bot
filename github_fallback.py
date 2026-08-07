@@ -20,6 +20,7 @@ dependency needed for two simple calls (create an Issue / PUT a file).
 import base64
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -40,13 +41,20 @@ def _headers() -> dict:
     }
 
 
+ISSUE_TITLE_PREFIX = "[مشروع بدون تقييم AI] "
+FALLBACK_ISSUE_LABEL = "ai-unavailable"
+
+
 def _format_project_markdown(project, reason: str) -> str:
     """Raw project details as Markdown — used as both the GitHub Issue body
     and the uploaded .md file's content. Includes everything scraped so a
     manual proposal can be written from this alone, without going back to
-    Mostaql first."""
+    Mostaql first. Field labels here are matched exactly by parse_issue_body()
+    below when reading an issue back for auto re-evaluation — keep them in
+    sync if this format ever changes."""
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     budget = project.budget or "غير محدد"
+    duration = getattr(project, "duration", None) or "غير محددة"
     tags = ", ".join(getattr(project, "tags", None) or []) or "غير متوفرة"
 
     return f"""# {project.title}
@@ -55,6 +63,7 @@ def _format_project_markdown(project, reason: str) -> str:
 **التاريخ (UTC):** {timestamp}
 **الرابط:** {project.url}
 **الميزانية المعلنة:** {budget}
+**مدة التسليم المطلوبة:** {duration}
 **المهارات المطلوبة (إن توفرت):** {tags}
 
 ---
@@ -65,39 +74,40 @@ def _format_project_markdown(project, reason: str) -> str:
 """
 
 
-def create_github_issue(project, reason: str) -> bool:
+def create_github_issue(project, reason: str) -> Optional[int]:
     """Creates a new GitHub Issue containing the full raw project details.
-    Returns True on success. Never raises — logs and returns False on any
-    failure, so a GitHub-side problem can't crash the caller either."""
+    Returns the issue NUMBER on success (used to link/track it — see
+    queue_project's issue_number param — and to close it later), or None
+    on failure. Never raises."""
     if not config.GITHUB_FALLBACK_ENABLED:
         logger.warning(
             "GitHub fallback not configured (GITHUB_TOKEN/GITHUB_REPO missing) "
             "— cannot save unevaluated project '%s'. It will be logged only.",
             project.title,
         )
-        return False
+        return None
 
     url = f"{GITHUB_API_BASE}/repos/{config.GITHUB_REPO}/issues"
     payload = {
-        "title": f"[مشروع بدون تقييم AI] {project.title}",
+        "title": f"{ISSUE_TITLE_PREFIX}{project.title}",
         "body": _format_project_markdown(project, reason),
-        "labels": ["needs-manual-review", "ai-unavailable"],
+        "labels": ["needs-manual-review", FALLBACK_ISSUE_LABEL],
     }
 
     try:
         resp = requests.post(url, json=payload, headers=_headers(), timeout=config.GITHUB_API_TIMEOUT)
         if resp.status_code == 201:
-            issue_url = resp.json().get("html_url", "")
-            logger.info("Saved unevaluated project '%s' to GitHub issue: %s", project.title, issue_url)
-            return True
+            data = resp.json()
+            logger.info("Saved unevaluated project '%s' to GitHub issue: %s", project.title, data.get("html_url", ""))
+            return data.get("number")
         logger.error(
             "GitHub issue creation failed for '%s' (HTTP %s): %s",
             project.title, resp.status_code, resp.text[:300],
         )
-        return False
+        return None
     except requests.exceptions.RequestException as exc:
         logger.error("GitHub issue creation request failed for '%s': %s", project.title, exc)
-        return False
+        return None
 
 
 def upload_github_markdown(project, reason: str) -> bool:
@@ -141,18 +151,22 @@ def upload_github_markdown(project, reason: str) -> bool:
         return False
 
 
-def save_project_to_github(project, reason: str) -> bool:
+def save_project_to_github(project, reason: str) -> tuple:
     """
     Dispatches to the configured fallback mode (config.GITHUB_FALLBACK_MODE:
-    "issue" or "file"). This is a human-readable permanent record — it is
-    NOT what gets read back for auto re-evaluation (see the queue functions
-    below for that); this is purely for visibility/audit trail.
-    Never raises — always returns a bool so the caller can log the outcome
-    but a GitHub-side failure can never crash the main loop.
+    "issue" or "file"). This is a human-readable permanent record.
+    Returns (success: bool, issue_number: Optional[int]) — issue_number is
+    only populated in "issue" mode, and is used to link a queue entry to
+    its issue (see queue_project) so it can be auto-closed once the project
+    is successfully re-evaluated, whichever mechanism resolves it first.
+    Never raises — always returns cleanly so a GitHub-side failure can
+    never crash the main loop.
     """
     if config.GITHUB_FALLBACK_MODE == "file":
-        return upload_github_markdown(project, reason)
-    return create_github_issue(project, reason)
+        ok = upload_github_markdown(project, reason)
+        return ok, None
+    issue_number = create_github_issue(project, reason)
+    return issue_number is not None, issue_number
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +230,7 @@ def _put_json_file(path: str, obj, sha: Optional[str], message: str) -> bool:
         return False
 
 
-def queue_project(project, reason: str) -> bool:
+def queue_project(project, reason: str, issue_number: Optional[int] = None) -> bool:
     """
     Appends (or refreshes, if already present) a project entry in the
     GitHub-hosted pending-projects queue file. This is what
@@ -224,6 +238,13 @@ def queue_project(project, reason: str) -> bool:
     raises; returns False (and logs) if GitHub fallback isn't configured or
     the write fails — the project is still preserved via
     save_project_to_github()'s Issue/file record either way.
+
+    issue_number (optional): if this project was also saved as a GitHub
+    Issue, pass its number here so that when this queue entry is
+    successfully re-evaluated, the linked issue can be auto-closed too
+    (see main.py's retry_pending_github_queue) — guaranteeing each project
+    is only ever actually re-evaluated once, even though both the queue
+    and the issue independently reference it.
     """
     if not config.GITHUB_FALLBACK_ENABLED:
         logger.warning(
@@ -250,6 +271,7 @@ def queue_project(project, reason: str) -> bool:
         "tags": getattr(project, "tags", None) or [],
         "client_warning": getattr(project, "client_warning", None),
         "reason": reason,
+        "issue_number": issue_number,
         "queued_at": datetime.now(timezone.utc).isoformat(),
         "retry_count": 0,
     })
@@ -287,3 +309,101 @@ def save_pending_queue(queue: List[dict], message: str) -> bool:
         return False
     _current, sha = _get_json_file(config.GITHUB_QUEUE_FILE)
     return _put_json_file(config.GITHUB_QUEUE_FILE, queue, sha, message=message)
+
+
+# ---------------------------------------------------------------------------
+# Open-Issues re-evaluation worker
+# ---------------------------------------------------------------------------
+# Reads GitHub Issues directly (rather than the queue file above) as an
+# independent, explicit "check open issues, parse, re-evaluate, close"
+# capability. main.py's retry_open_github_issues() skips any issue number
+# already tracked by an active queue entry, so a project referenced by both
+# mechanisms is still only ever actually re-evaluated once.
+# ---------------------------------------------------------------------------
+
+_ISSUE_URL_RE = re.compile(r"\*\*الرابط:\*\*\s*(\S+)")
+_ISSUE_BUDGET_RE = re.compile(r"\*\*الميزانية المعلنة:\*\*\s*(.+)")
+_ISSUE_DURATION_RE = re.compile(r"\*\*مدة التسليم المطلوبة:\*\*\s*(.+)")
+_ISSUE_TAGS_RE = re.compile(r"\*\*المهارات المطلوبة \(إن توفرت\):\*\*\s*(.+)")
+_ISSUE_DESC_RE = re.compile(r"## الوصف الكامل\s*\n+(.*)", re.DOTALL)
+
+
+def list_open_fallback_issues() -> List[dict]:
+    """
+    Fetches open GitHub issues labeled FALLBACK_ISSUE_LABEL (i.e. only
+    issues this bot itself created via create_github_issue — never touches
+    unrelated issues in the repo). Never raises; returns [] on any failure.
+    """
+    if not config.GITHUB_FALLBACK_ENABLED:
+        return []
+
+    url = f"{GITHUB_API_BASE}/repos/{config.GITHUB_REPO}/issues"
+    params = {"state": "open", "labels": FALLBACK_ISSUE_LABEL, "per_page": 100}
+    try:
+        resp = requests.get(url, headers=_headers(), params=params, timeout=config.GITHUB_API_TIMEOUT)
+        if resp.status_code != 200:
+            logger.error("Listing open GitHub issues failed (HTTP %s): %s", resp.status_code, resp.text[:300])
+            return []
+        issues = resp.json()
+        # The Issues endpoint also returns pull requests; filter those out.
+        return [i for i in issues if "pull_request" not in i]
+    except requests.exceptions.RequestException as exc:
+        logger.error("Listing open GitHub issues request failed: %s", exc)
+        return []
+
+
+def parse_issue_body(body: str) -> dict:
+    """
+    Parses the raw project details back out of an Issue body formatted by
+    _format_project_markdown(). Field labels here must match that function
+    exactly. Never raises — any field that doesn't match returns None (or
+    [] for tags), which callers must treat as 'unknown', not 'empty'.
+    """
+    body = body or ""
+
+    def _extract(pattern: re.Pattern, placeholder: str = None) -> Optional[str]:
+        match = pattern.search(body)
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return None if placeholder and value == placeholder else value
+
+    url = _extract(_ISSUE_URL_RE)
+    budget = _extract(_ISSUE_BUDGET_RE, placeholder="غير محدد")
+    duration = _extract(_ISSUE_DURATION_RE, placeholder="غير محددة")
+    tags_raw = _extract(_ISSUE_TAGS_RE, placeholder="غير متوفرة")
+    tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+
+    desc_match = _ISSUE_DESC_RE.search(body)
+    description = desc_match.group(1).strip() if desc_match else ""
+
+    return {"url": url, "budget": budget, "duration": duration, "tags": tags, "description": description}
+
+
+def close_issue(issue_number: int, comment: Optional[str] = None) -> bool:
+    """
+    Closes a GitHub issue (optionally posting a comment first, e.g. the
+    re-evaluation result). Never raises; returns False on any failure or if
+    issue_number is falsy/not configured."""
+    if not config.GITHUB_FALLBACK_ENABLED or not issue_number:
+        return False
+
+    base_url = f"{GITHUB_API_BASE}/repos/{config.GITHUB_REPO}/issues/{issue_number}"
+    try:
+        if comment:
+            requests.post(
+                f"{base_url}/comments", json={"body": comment},
+                headers=_headers(), timeout=config.GITHUB_API_TIMEOUT,
+            )
+        resp = requests.patch(
+            base_url, json={"state": "closed"},
+            headers=_headers(), timeout=config.GITHUB_API_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            logger.info("Closed GitHub issue #%s", issue_number)
+            return True
+        logger.error("Failed to close GitHub issue #%s (HTTP %s): %s", issue_number, resp.status_code, resp.text[:300])
+        return False
+    except requests.exceptions.RequestException as exc:
+        logger.error("Request to close GitHub issue #%s failed: %s", issue_number, exc)
+        return False
