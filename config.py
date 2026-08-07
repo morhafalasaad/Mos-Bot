@@ -80,6 +80,12 @@ MOSTAQL_CATEGORIES = os.getenv("MOSTAQL_CATEGORIES", "")
 # disabling this only means "back to evaluating every new project."
 FETCH_PROJECT_TAGS = os.getenv("FETCH_PROJECT_TAGS", "true").strip().lower() in ("1", "true", "yes")
 
+# Client warning system: a project is NEVER skipped/filtered based on the
+# client's profile — a rating below this is just appended as a "⚠️" note in
+# the Telegram message so you can decide with full information. See
+# scraper.build_client_warning / parse_client_info.
+LOW_CLIENT_RATING_THRESHOLD = float(os.getenv("LOW_CLIENT_RATING_THRESHOLD", "3.5"))
+
 # ---- Matching / scoring -------------------------------------------------------
 # Mostaql project tags are frequently in Arabic (e.g. "علم البيانات" rather
 # than "Data Science"), so each skill below has an Arabic entry alongside

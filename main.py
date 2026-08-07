@@ -104,6 +104,7 @@ def run_cycle():
                     budget=project.budget,
                     suggested_price=evaluation.suggested_price,
                     delivery_days=evaluation.delivery_days,
+                    client_warning=project.client_warning,
                 )
             else:
                 # Bug fix: this used to log config.MATCH_THRESHOLD (the

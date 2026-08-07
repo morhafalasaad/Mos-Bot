@@ -165,8 +165,12 @@ class Project:
     # Official "المهارات المطلوبة" (required skills) tags from the project's
     # own detail page. Only the LISTING page is scraped by default — tags
     # live on each project's individual page, so this stays empty until
-    # fetch_project_tags() is called for that project (see get_new_projects).
+    # fetch_project_details() is called for that project (see get_new_projects).
     tags: List[str] = field(default_factory=list)
+    # Populated by fetch_project_details() from the SAME detail-page fetch
+    # as tags (no extra request). None = no concern detected / unknown
+    # (client is never blocked either way — see build_client_warning).
+    client_warning: Optional[str] = None
 
 
 def _build_session():
@@ -464,27 +468,129 @@ def parse_project_tags(html: str) -> List[str]:
     return _parse_tags_via_raw_regex(html)
 
 
-def fetch_project_tags(session, project: Project) -> List[str]:
-    """
-    Fetches a single project's own detail page and extracts its required-
-    skill tags. This is an EXTRA Mostaql request per newly-seen project
-    (gated by config.FETCH_PROJECT_TAGS), separate from the one listing-page
-    request per cycle. The trade-off is intentional: it only runs for
-    projects that already passed dedup and would otherwise cost a Gemini
-    API call — spending one cheap Mostaql request to potentially save a
-    Gemini call is the whole point of local pre-filtering.
+# ---------------------------------------------------------------------------
+# Client warning system — NEVER filters/skips a project. Only surfaces an
+# advisory note in the Telegram message so the human can decide.
+#
+# HONESTY NOTE: unlike the /project/<id>- and /projects/skill/<slug> URL
+# patterns (which are confirmed from a live page fetch), the exact markup
+# Mostaql uses to display a client's rating/history is NOT independently
+# verified here. Rather than guess a specific CSS class (which is exactly
+# what caused the very first version of this scraper to silently return 0
+# results), this uses TEXT-ANCHOR pattern matching against the page's
+# plain text content — phrases and number formats a client-info section is
+# likely to contain, regardless of what HTML wraps them in. This degrades
+# gracefully: if these patterns don't match Mostaql's actual wording,
+# client_warning simply stays None (no warning shown) rather than showing
+# a wrong one. Check the "client_warning=" log line after deploying; if
+# it's always None even for accounts you know are new, the phrases below
+# need adjusting to match what Mostaql actually displays.
+# ---------------------------------------------------------------------------
 
-    Never raises: returns [] on any failure (block, timeout, parse miss),
-    which is the correct "unknown" signal for the fail-open pre-filter.
+# Phrases that, if present anywhere in a project detail page's text, are a
+# strong signal the client is new / has no rating history yet.
+_NEW_CLIENT_MARKERS = (
+    "عميل جديد",
+    "لا يوجد تقييم",
+    "لا توجد تقييمات",
+    "لم يتم التقييم",
+    "بدون تقييم",
+    "لا يوجد سجل أعمال سابق",
+)
+
+# Matches a rating like "4.8 من 5" or "4.8/5" or "(4.8)".
+_RATING_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:من\s*5|/\s*5)")
+
+# Matches an explicit review/rating count like "0 تقييمات" or "3 تقييم".
+_REVIEWS_COUNT_RE = re.compile(r"(\d+)\s*تقييم")
+
+
+def parse_client_info(html: str) -> dict:
+    """Extracts whatever client-profile signals can be found on a project
+    detail page's plain text: {'rating': float|None, 'reviews_count':
+    int|None, 'is_new': bool|None}. Never raises; returns {} if html is
+    empty. All fields default to None/unknown rather than a false signal —
+    this function only ever adds information, never conclusions it can't
+    support."""
+    if not html:
+        return {}
+
+    soup = _make_soup(html)
+    text = soup.get_text(" ", strip=True)
+
+    info = {"rating": None, "reviews_count": None, "is_new": None}
+
+    rating_match = _RATING_RE.search(text)
+    if rating_match:
+        try:
+            info["rating"] = float(rating_match.group(1))
+        except ValueError:
+            pass
+
+    reviews_match = _REVIEWS_COUNT_RE.search(text)
+    if reviews_match:
+        count = int(reviews_match.group(1))
+        info["reviews_count"] = count
+        if count == 0:
+            info["is_new"] = True
+
+    if any(marker in text for marker in _NEW_CLIENT_MARKERS):
+        info["is_new"] = True
+
+    return info
+
+
+def build_client_warning(client_info: dict) -> Optional[str]:
+    """
+    Turns extracted client signals into a human-readable Arabic warning
+    line, or None if nothing warrants one. NEVER used to filter/skip a
+    project — only ever appended as an advisory note (see notifier.py) so
+    the human stays fully in control of the accept/decline decision.
+    """
+    if not client_info:
+        return None
+
+    if client_info.get("is_new"):
+        return "⚠️ تنبيه: العميل جديد على المنصة أو ليس لديه تقييمات سابقة"
+
+    rating = client_info.get("rating")
+    if rating is not None and rating < config.LOW_CLIENT_RATING_THRESHOLD:
+        return f"⚠️ تنبيه: تقييم العميل منخفض ({rating:g}/5)"
+
+    return None
+
+
+def fetch_project_details(session, project: Project) -> None:
+    """
+    Fetches a single project's own detail page ONCE and populates BOTH
+    project.tags and project.client_warning from that same HTML — this
+    intentionally avoids a second, redundant Mostaql request for what
+    would otherwise be two separate fetches of the same page.
+
+    This is an EXTRA Mostaql request per newly-seen project (gated by
+    config.FETCH_PROJECT_TAGS), separate from the one listing-page request
+    per cycle. The trade-off is intentional: it only runs for projects that
+    already passed dedup and would otherwise cost a Gemini API call —
+    spending one cheap Mostaql request to potentially save a Gemini call
+    (via the tag pre-filter) is the whole point; the client-info extraction
+    is a free bonus from the same page load.
+
+    Never raises: on any failure (block, timeout, parse miss), project.tags
+    stays [] and project.client_warning stays None — both correct "unknown"
+    defaults (fail-open for the pre-filter; no false warning for the
+    client-warning system).
     """
     try:
         html = fetch_page(session, project.url)
-        tags = parse_project_tags(html)
-        logger.info("Fetched %s tag(s) for project '%s': %s", len(tags), project.title, tags)
-        return tags
+        project.tags = parse_project_tags(html)
+        client_info = parse_client_info(html)
+        project.client_warning = build_client_warning(client_info)
+        logger.info(
+            "Project '%s': %s tag(s)=%s | client_warning=%s",
+            project.title, len(project.tags), project.tags, project.client_warning,
+        )
     except Exception as exc:
-        logger.warning("Could not fetch/parse tags for %s: %s", project.url, exc)
-        return []
+        logger.warning("Could not fetch/parse details for %s: %s", project.url, exc)
 
 
 def parse_projects(html: str) -> List[Project]:
@@ -586,9 +692,9 @@ def get_new_projects() -> List[Project]:
 
             if config.FETCH_PROJECT_TAGS:
                 for project in new_projects:
-                    project.tags = fetch_project_tags(session, project)
+                    fetch_project_details(session, project)
             else:
-                logger.info("FETCH_PROJECT_TAGS is disabled — skipping per-project tag fetch")
+                logger.info("FETCH_PROJECT_TAGS is disabled — skipping per-project tag/client-info fetch")
         else:
             logger.info("No new projects this cycle")
 

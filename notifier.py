@@ -3,10 +3,14 @@ notifier.py
 -----------
 Lightweight Telegram notifier using plain `requests` calls to the Telegram
 Bot HTTP API (no heavy SDK needed). Sends the project title, match score,
-link, and AI-drafted Arabic proposal so the human can review and submit
-the proposal manually on Mostaql (human-in-the-loop by design).
+an advisory client-profile warning (if any), price/delivery estimate, and
+the AI-drafted Arabic proposal — with a tap-to-open inline button for the
+project page and the proposal formatted as a tap-to-copy code block — so
+the human can review and submit the proposal manually on Mostaql
+(human-in-the-loop by design).
 """
 
+import json
 import logging
 
 import requests
@@ -27,6 +31,26 @@ def _escape_markdown(text: str) -> str:
     return text
 
 
+def _to_code_block(text: str) -> str:
+    """
+    Wraps text in a Telegram Markdown fenced code block (```...```), which
+    renders as tap-to-copy monospace text on Telegram mobile clients — the
+    whole point being one tap to copy the proposal, no manual text
+    selection, for maximum speed when submitting on Mostaql.
+
+    Content inside a Telegram code block is NOT re-parsed for other
+    Markdown entities (asterisks/underscores in the proposal text won't be
+    misread as bold/italic) — but a literal backtick or triple-backtick
+    sequence WITHIN the text could still break the fence itself, so those
+    are stripped defensively. AI-drafted Arabic prose is extremely unlikely
+    to contain them, but this costs nothing and closes the edge case.
+    """
+    if not text:
+        return "```\n(لا يوجد نص عرض)\n```"
+    safe = text.replace("```", "").replace("`", "'")
+    return f"```\n{safe}\n```"
+
+
 def build_message(
     title: str,
     url: str,
@@ -35,7 +59,12 @@ def build_message(
     budget: str = None,
     suggested_price: str = None,
     delivery_days: int = None,
+    client_warning: str = None,
 ) -> str:
+    # Placed right under the score, above price/delivery, so it's one of
+    # the first things visible — a warning the user has to scroll past
+    # defeats the point of "still able to apply, but aware."
+    warning_line = f"\n{client_warning}" if client_warning else ""
     price_line = f"\n💵 *السعر المقترح:* {_escape_markdown(str(suggested_price))}" if suggested_price else ""
     days_line = f"\n⏱ *مدة التسليم المتوقعة:* {delivery_days} يوم" if delivery_days else ""
     budget_line = f"\n💰 *ميزانية العميل:* {_escape_markdown(budget)}" if budget else ""
@@ -43,17 +72,29 @@ def build_message(
         f"🆕 *مشروع جديد مطابق*\n\n"
         f"📌 *العنوان:* {_escape_markdown(title)}\n"
         f"📊 *نسبة التطابق:* {score:.0f}%"
+        f"{warning_line}"
         f"{price_line}"
         f"{days_line}"
-        f"{budget_line}\n"
-        f"🔗 *الرابط:* {url}\n\n"
-        f"✍️ *مسودة العرض المقترح:*\n{proposal_ar}\n\n"
-        f"_راجع العرض ثم قم بإرساله يدوياً على منصة مستقل._"
+        f"{budget_line}\n\n"
+        f"✍️ *مسودة العرض المقترح (اضغط للنسخ):*\n{_to_code_block(proposal_ar)}\n\n"
+        f"_راجع العرض ثم استخدم الزر أدناه لفتح المشروع وإرسال العرض يدوياً._"
     )
 
 
-def send_telegram_message(text: str) -> bool:
-    """Send a message to the configured chat. Returns True on success, never raises."""
+def build_inline_keyboard(url: str) -> dict:
+    """A single button that opens the project page directly on Mostaql —
+    Telegram inline keyboard 'url' buttons require a valid absolute
+    http(s) URL, which project.url always is (see scraper.py)."""
+    return {
+        "inline_keyboard": [
+            [{"text": "🔗 فتح المشروع على مستقل", "url": url}],
+        ]
+    }
+
+
+def send_telegram_message(text: str, reply_markup: dict = None) -> bool:
+    """Send a message to the configured chat, optionally with an inline
+    keyboard. Returns True on success, never raises."""
     payload = {
         "chat_id": config.TELEGRAM_CHAT_ID,
         "text": text,
@@ -63,6 +104,13 @@ def send_telegram_message(text: str) -> bool:
         # Mostaql URL — keeps the notification compact.
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        # Telegram's Bot API requires reply_markup to be a JSON-serialized
+        # string when sent as form-encoded data (as opposed to a raw JSON
+        # request body) — passing the dict directly would be wrongly
+        # stringified by requests and silently rejected by Telegram.
+        payload["reply_markup"] = json.dumps(reply_markup)
+
     try:
         resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
         if resp.status_code == 200:
@@ -71,6 +119,8 @@ def send_telegram_message(text: str) -> bool:
 
         logger.error("Telegram API error %s: %s", resp.status_code, resp.text[:300])
         # Retry once as plain text if Markdown parsing was the problem.
+        # reply_markup (already JSON-stringified above) is preserved in the
+        # retry since we only remove parse_mode from the same payload dict.
         if resp.status_code == 400:
             payload.pop("parse_mode", None)
             retry_resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
@@ -92,9 +142,12 @@ def notify_matched_project(
     budget: str = None,
     suggested_price: str = None,
     delivery_days: int = None,
+    client_warning: str = None,
 ):
-    message = build_message(title, url, score, proposal_ar, budget, suggested_price, delivery_days)
-    send_telegram_message(message)
+    message = build_message(
+        title, url, score, proposal_ar, budget, suggested_price, delivery_days, client_warning,
+    )
+    send_telegram_message(message, reply_markup=build_inline_keyboard(url))
 
 
 def notify_error(context: str, error_message: str):
