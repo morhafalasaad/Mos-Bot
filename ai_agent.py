@@ -501,34 +501,21 @@ def draft_proposal(
     Step 2 (only called if score >= threshold): draft an Arabic proposal
     following Mostaql's professional-proposal standards.
 
-    IMPORTANT: suggested_price/delivery_days are the SAME figures already
-    computed by score_project() and shown in the Telegram notification —
-    passing them in here (rather than letting this separate Gemini call
-    invent its own numbers) is what guarantees the price/timeline quoted
-    INSIDE the proposal text always matches what you see in Telegram.
-    Without this, the two calls could independently land on different
-    numbers, which would be exactly the kind of inconsistency/broken-promise
-    this function is meant to avoid.
+    IMPORTANT: budget/suggested_price/delivery_days are intentionally kept
+    OUTSIDE this prompt. They are computed or scraped elsewhere and shown
+    separately in the Telegram notification by notifier.py, but the proposal
+    body itself must not include any price, budget, cost, or delivery-duration
+    values to avoid platform-policy issues. Keep these parameters in the
+    signature for API compatibility with the rest of the pipeline.
     """
     skills_list = ", ".join(config.MY_SKILLS)
-    budget_line = f"\nميزانية العميل المعلنة: {budget}" if budget else ""
-    price_line = (
-        f"\nالسعر الذي يجب ذكره في العرض: {suggested_price}"
-        if suggested_price else
-        "\n(لم يتوفر سعر مقترح مسبقاً — اقترح سعراً واقعياً ومنطقياً بناءً على حجم المشروع، ولا تكتب رقماً وهمياً أو رمزياً مثل 1$.)"
-    )
-    days_line = (
-        f"\nمدة التسليم التي يجب ذكرها في العرض: {delivery_days} يوم"
-        if delivery_days else
-        "\n(لم تتوفر مدة تسليم مقترحة مسبقاً — اقترح مدة واقعية بناءً على حجم المشروع.)"
-    )
 
     prompt = f"""
 أنت مساعد كتابة عروض احترافي لمستقل يعمل على منصة مستقل (Mostaql).
 مهارات المستقل: {skills_list}
 
 عنوان المشروع: {title}
-وصف المشروع: {description}{budget_line}{price_line}{days_line}
+وصف المشروع: {description}
 
 اكتب عرضاً احترافياً ومقنعاً باللغة العربية الفصحى لتقديمه على هذا المشروع،
 ملتزماً حرفياً بالبنية التالية (بدون كتابة عناوين الأقسام نفسها في النص،
@@ -539,19 +526,26 @@ def draft_proposal(
    العميل كما ورد في وصف المشروع تحديداً (وليس فهماً عاماً يصلح لأي مشروع).
 3. خطة عمل: خطوات تنفيذ مختصرة ومنظمة (2-4 خطوات) تبني الثقة بأن لديك منهجية
    واضحة، لا مجرد وعود عامة.
-4. السعر ومدة التسليم: اذكر السعر ومدة التسليم المحددين أعلاه بالضبط — لا
-   تخترع رقماً مختلفاً عنهما تحت أي ظرف، فهما نفس الرقمين المرسلين للعميل
-   لاحقاً في نفس الصفقة.
-5. القيمة المضافة (لماذا تختارني): أبرز الخبرات ذات الصلة المباشرة بهذا
+4. القيمة المضافة (لماذا تختارني): أبرز الخبرات ذات الصلة المباشرة بهذا
    المشروع تحديداً فقط من بين مهارات المستقل المذكورة أعلاه — لا تسرد كل
    المهارات، فقط ما يخدم هذا المشروع.
-6. خاتمة احترافية: جملة ختامية مهنية تشجع العميل على التواصل أو طرح الأسئلة.
+5. خاتمة احترافية: جملة ختامية مهنية تشجع العميل على التواصل أو طرح الأسئلة.
 
 قواعد صارمة يجب الالتزام بها:
+- ممنوع منعاً باتاً ذكر أي رقم أو قيمة أو نطاق يتعلق بالسعر أو الميزانية أو
+  التكلفة أو المقابل أو مدة التسليم أو عدد الأيام داخل نص العرض. هذه البيانات
+  تُعرض خارج نص العرض في رسالة تيليجرام فقط، ولا يجب أن تظهر في العرض نفسه حتى
+  لو وردت في وصف المشروع أو في بياناته.
+- لا تعيد صياغة بيانات الميزانية أو السعر أو مدة التنفيذ بالكلمات أيضاً؛ لا
+  تكتب مثلاً "بميزانية مناسبة" أو "خلال أيام قليلة" أو أي تعبير بديل يشير
+  إلى تكلفة أو مدة. ركّز فقط على الفهم والخطة والقيمة المهنية.
 - ممنوع استخدام عبارات عامة جاهزة أو نص يصلح لأي مشروع آخر (لا نسخ ولصق).
 - ممنوع المبالغة أو تقديم وعود لا يمكن الوفاء بها بدقة — كن شفافاً وواقعياً
   تماماً بخصوص ما يمكن تنفيذه.
-- ممنوع كتابة سعر وهمي أو رمزي (مثل 1$) — استخدم فقط السعر المحدد أعلاه.
+- لا تفرض أو تحشر تقنيات بعينها مثل OOP أو Python أو أي تقنية أخرى في كل عرض.
+  اذكر التقنيات فقط إذا طلبها العميل صراحة في وصف المشروع، أو إذا كانت مطلوبة
+  بشكل مباشر وحاسم لتنفيذ الحل. عند ذكر تقنية، اربطها بسياق المشروع تحديداً
+  دون سرد قائمة مهارات عامة.
 - أسلوب واثق ومهني دون تكلف.
 - طوله لا يتجاوز 180 كلمة.
 - لا تضع أي عناوين أقسام أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ مباشرة.
