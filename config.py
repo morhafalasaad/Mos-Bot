@@ -162,3 +162,18 @@ CYCLE_TIMEOUT = int(os.getenv("CYCLE_TIMEOUT", "600"))  # 10 min
 
 # ---- Dummy HTTP server (Render Web Service requires a bound port) --------------
 PORT = int(os.getenv("PORT", "10000"))
+
+# ---- GitHub fallback (used when the Gemini AI call itself fails, e.g. every ---
+# key in GEMINI_API_KEYS hit 429 RESOURCE_EXHAUSTED) --------------------------
+# By design, no local storage is used for this — raw project data is sent
+# straight to GitHub (as an Issue or an uploaded Markdown file) so nothing
+# is silently lost and nothing is written to local/ephemeral disk. See
+# github_fallback.py. Optional feature: only active if both GITHUB_TOKEN and
+# GITHUB_REPO are set; otherwise main.py just logs a warning and moves on.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")            # a fine-grained PAT with Issues/Contents write access
+GITHUB_REPO = os.getenv("GITHUB_REPO", "")          # "owner/repo"
+GITHUB_FALLBACK_MODE = os.getenv("GITHUB_FALLBACK_MODE", "issue").strip().lower()  # "issue" or "file"
+GITHUB_FALLBACK_BRANCH = os.getenv("GITHUB_FALLBACK_BRANCH", "main")
+GITHUB_FALLBACK_DIR = os.getenv("GITHUB_FALLBACK_DIR", "unevaluated_projects")
+GITHUB_API_TIMEOUT = int(os.getenv("GITHUB_API_TIMEOUT", "20"))
+GITHUB_FALLBACK_ENABLED = bool(GITHUB_TOKEN and GITHUB_REPO)

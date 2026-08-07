@@ -186,6 +186,14 @@ class Evaluation:
     suggested_price: Optional[str] = None
     delivery_days: Optional[int] = None
     proposal_ar: Optional[str] = None
+    # True specifically when the Gemini call itself failed (e.g. every key
+    # in GEMINI_API_KEYS hit 429/RESOURCE_EXHAUSTED, or another API error) —
+    # as opposed to a successful call that simply scored the project low.
+    # main.py uses this to route to the GitHub fallback instead of the
+    # normal "below threshold" path, since match_score=0.0 alone can't
+    # distinguish "genuinely irrelevant project" from "we never actually
+    # found out."
+    ai_failed: bool = False
 
 
 def _generate(prompt: str, json_mode: bool = False):
@@ -644,7 +652,7 @@ def evaluate_project(
 
     score_data = score_project(title, description)
     if score_data is None:
-        return Evaluation(match_score=0.0, reasoning="AI scoring unavailable (error).")
+        return Evaluation(match_score=0.0, reasoning="AI scoring unavailable (error).", ai_failed=True)
 
     # Round to a whole number ONCE, immediately, before any comparison or
     # logging happens anywhere downstream (here, and in main.py). This is

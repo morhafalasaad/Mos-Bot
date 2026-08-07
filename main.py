@@ -39,6 +39,7 @@ import scraper
 import ai_agent
 import notifier
 import health_server
+import github_fallback
 
 # ---------------------------------------------------------------------------
 # Logging setup: force unbuffered / line-buffered output so Render's log
@@ -89,6 +90,25 @@ def run_cycle():
                 project.title, evaluation.match_score, evaluation.reasoning,
                 evaluation.suggested_price, evaluation.delivery_days,
             )
+
+            # AI call itself failed (e.g. 429 RESOURCE_EXHAUSTED on every key
+            # in GEMINI_API_KEYS) — distinct from a successful call that just
+            # scored the project low. Per requirements: no local storage of
+            # this project's data; send the raw scraped details straight to
+            # GitHub (issue or file, see github_fallback.py) so nothing is
+            # silently lost, then move on to the next project in this cycle.
+            if evaluation.ai_failed:
+                saved = github_fallback.save_project_to_github(
+                    project,
+                    reason=f"Gemini API call failed: {evaluation.reasoning}",
+                )
+                logger.warning(
+                    "AI evaluation unavailable for '%s' — %s",
+                    project.title,
+                    "raw project data saved to GitHub" if saved else
+                    "GitHub fallback ALSO failed or is not configured; project data is not persisted anywhere",
+                )
+                continue
 
             # >= : must match ai_agent.py's evaluate_project() comparison
             # exactly (score >= config.MATCH_THRESHOLD) — that's the gate
