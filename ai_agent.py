@@ -96,13 +96,55 @@ logger = logging.getLogger("ai_agent")
 # at a time on a single worker thread (ThreadPoolExecutor(max_workers=1)).
 _current_key_index = 0
 
+if len(config.GEMINI_API_KEYS) > 1:
+    logger.info(
+        "Gemini: %s API key(s) configured for rotation on quota exhaustion.",
+        len(config.GEMINI_API_KEYS),
+    )
+else:
+    logger.warning(
+        "Gemini: only 1 API key configured — GEMINI_API_KEYS is not set (or "
+        "only contains one entry), so there is nothing to rotate to on a 429. "
+        "Set GEMINI_API_KEYS as a comma-separated list of keys FROM DIFFERENT "
+        "GOOGLE CLOUD PROJECTS to actually get separate quota pools — keys "
+        "created under the same project can share the same underlying quota, "
+        "in which case rotating between them will not avoid 429s either."
+    )
+
 
 def _build_client(key_index: int) -> genai.Client:
     return genai.Client(
         api_key=config.GEMINI_API_KEYS[key_index],
-        # http_options timeout is in MILLISECONDS for this SDK.
-        http_options=types.HttpOptions(timeout=config.GEMINI_TIMEOUT * 1000),
+        http_options=types.HttpOptions(
+            # timeout is in MILLISECONDS for this SDK.
+            timeout=config.GEMINI_TIMEOUT * 1000,
+            # CRITICAL: the SDK's own default retry behavior is up to 5
+            # attempts with exponential backoff (up to ~60s), and 429 is in
+            # its default retryable status list. Left at the default, a
+            # single generate_content() call would silently retry the SAME
+            # already-exhausted key up to 5 times internally — taking up to
+            # ~a minute — before our exception handler in _generate() ever
+            # sees it and gets a chance to rotate to the next key. Setting
+            # attempts=1 disables the SDK's internal retry entirely, so a
+            # 429 raises immediately and OUR rotation logic (which is what
+            # actually knows about the other keys) takes over right away.
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
     )
+
+
+def _build_client_safe(key_index: int) -> Optional[genai.Client]:
+    """Same as _build_client, but never raises — used when rotating to a
+    new key mid-retry-loop, since a single malformed/invalid key in the
+    list must not abort rotation to the REST of the list."""
+    try:
+        return _build_client(key_index)
+    except Exception as exc:
+        logger.error(
+            "Failed to build Gemini client for key #%s (is it malformed?): %s",
+            key_index + 1, exc,
+        )
+        return None
 
 
 _client = _build_client(_current_key_index)
@@ -217,16 +259,30 @@ def _generate(prompt: str, json_mode: bool = False):
                 raise
 
         # Reached only via the quota `break` above, or after exhausting
-        # transient retries on this key without success.
+        # transient retries on this key without success. This key is done.
         keys_tried += 1
-        if keys_tried >= n_keys:
-            break
-        _current_key_index = (_current_key_index + 1) % n_keys
-        logger.warning(
-            "Rotating to Gemini API key #%s of %s after repeated failures on the previous key",
-            _current_key_index + 1, n_keys,
-        )
-        _client = _build_client(_current_key_index)
+
+        # Find the next USABLE key, skipping any that fail to even build a
+        # client (e.g. malformed key), without wasting a generate_content
+        # attempt on a stale/unset client. Each skipped bad key also counts
+        # toward keys_tried, so this stays bounded by n_keys.
+        found_usable = False
+        while keys_tried < n_keys:
+            _current_key_index = (_current_key_index + 1) % n_keys
+            candidate_client = _build_client_safe(_current_key_index)
+            if candidate_client is not None:
+                _client = candidate_client
+                logger.warning(
+                    "Rotating to Gemini API key #%s of %s after repeated failures on the previous key",
+                    _current_key_index + 1, n_keys,
+                )
+                found_usable = True
+                break
+            logger.warning("Key #%s could not be initialized — skipping to next key", _current_key_index + 1)
+            keys_tried += 1
+
+        if not found_usable:
+            break  # no usable key left to rotate to
 
     logger.error(
         "All %s Gemini API key(s) exhausted (quota and/or repeated transient errors). "
@@ -494,61 +550,62 @@ def draft_proposal(
     title: str,
     description: str,
     budget: Optional[str] = None,
-    suggested_price: Optional[str] = None,
-    delivery_days: Optional[int] = None,
 ) -> Optional[str]:
     """
     Step 2 (only called if score >= threshold): draft an Arabic proposal
     following Mostaql's professional-proposal standards.
 
-    IMPORTANT: budget/suggested_price/delivery_days are intentionally kept
-    OUTSIDE this prompt. They are computed or scraped elsewhere and shown
-    separately in the Telegram notification by notifier.py, but the proposal
-    body itself must not include any price, budget, cost, or delivery-duration
-    values to avoid platform-policy issues. Keep these parameters in the
-    signature for API compatibility with the rest of the pipeline.
+    IMPORTANT — price/delivery time are DELIBERATELY NOT passed to this
+    prompt and DELIBERATELY NOT mentioned anywhere in the proposal text.
+    suggested_price/delivery_days (computed by score_project) still exist
+    and are still sent to Telegram as their own dedicated fields — this
+    function's prompt just never asks Gemini to restate them inside the
+    proposal body, and explicitly forbids it from doing so on its own
+    initiative, per Mostaql's rules against quoting price/duration inside
+    proposal text (that information belongs only in the platform's
+    dedicated bid fields, not embedded in free text).
     """
     skills_list = ", ".join(config.MY_SKILLS)
+    budget_line = f"\n(للسياق فقط، لا تذكره: ميزانية العميل المعلنة هي {budget})" if budget else ""
 
     prompt = f"""
-أنت مساعد كتابة عروض احترافي لمستقل يعمل على منصة مستقل (Mostaql).
-مهارات المستقل: {skills_list}
+أنت مستقل خبير تكتب عرضك الشخصي لتقديمه على مشروع في منصة مستقل (Mostaql).
+مهاراتك الفعلية (استخدم منها فقط ما يخدم هذا المشروع تحديداً، وتجاهل الباقي
+تماماً): {skills_list}
 
 عنوان المشروع: {title}
-وصف المشروع: {description}
+وصف المشروع: {description}{budget_line}
 
-اكتب عرضاً احترافياً ومقنعاً باللغة العربية الفصحى لتقديمه على هذا المشروع،
-ملتزماً حرفياً بالبنية التالية (بدون كتابة عناوين الأقسام نفسها في النص،
-اجعلها تتدفق كعرض واحد متماسك):
+اكتب عرضاً شخصياً بصوت مستقل بشري حقيقي وخبير، باللغة العربية الفصحى،
+يغطي هذه العناصر بشكل متدفق وطبيعي (بدون كتابة عناوين الأقسام، وبدون أن
+يبدو كقالب جامد مكرر):
 
-1. تحية ومقدمة موجزة: تحية مهنية مختصرة ومقدمة سريعة عن نفسك كمستقل مختص.
-2. إثبات فهم عميق للمشروع: جملة أو جملتان تُظهران فهماً دقيقاً ومحدداً لاحتياج
-   العميل كما ورد في وصف المشروع تحديداً (وليس فهماً عاماً يصلح لأي مشروع).
-3. خطة عمل: خطوات تنفيذ مختصرة ومنظمة (2-4 خطوات) تبني الثقة بأن لديك منهجية
-   واضحة، لا مجرد وعود عامة.
-4. القيمة المضافة (لماذا تختارني): أبرز الخبرات ذات الصلة المباشرة بهذا
-   المشروع تحديداً فقط من بين مهارات المستقل المذكورة أعلاه — لا تسرد كل
-   المهارات، فقط ما يخدم هذا المشروع.
-5. خاتمة احترافية: جملة ختامية مهنية تشجع العميل على التواصل أو طرح الأسئلة.
+- تحية ومقدمة موجزة تعرّف بك كمستقل مختص.
+- إثبات فهم دقيق ومحدد لما يحتاجه هذا العميل تحديداً كما ورد في وصف
+  المشروع فعلياً — وليس فهماً عاماً ينطبق على أي مشروع مشابه.
+- خطة عمل مختصرة (2-4 خطوات) تُظهر منهجية واضحة تبني الثقة.
+- لماذا أنت الخيار المناسب: اذكر فقط الخبرات المرتبطة مباشرة بما يطلبه
+  هذا المشروع تحديداً. لا تسرد كل مهاراتك، ولا تذكر أي تقنية (بايثون،
+  OOP، فلاتر، الخ) إلا إذا كانت مطلوبة صراحة في وصف المشروع أو ضرورية
+  تقنياً وبشكل مباشر لحل المشكلة المطروحة — ذِكر تقنيات غير ذات صلة
+  "لحشو" العرض ممنوع تماماً.
+- خاتمة احترافية تدعو العميل للتواصل أو طرح الأسئلة.
 
-قواعد صارمة يجب الالتزام بها:
-- ممنوع منعاً باتاً ذكر أي رقم أو قيمة أو نطاق يتعلق بالسعر أو الميزانية أو
-  التكلفة أو المقابل أو مدة التسليم أو عدد الأيام داخل نص العرض. هذه البيانات
-  تُعرض خارج نص العرض في رسالة تيليجرام فقط، ولا يجب أن تظهر في العرض نفسه حتى
-  لو وردت في وصف المشروع أو في بياناته.
-- لا تعيد صياغة بيانات الميزانية أو السعر أو مدة التنفيذ بالكلمات أيضاً؛ لا
-  تكتب مثلاً "بميزانية مناسبة" أو "خلال أيام قليلة" أو أي تعبير بديل يشير
-  إلى تكلفة أو مدة. ركّز فقط على الفهم والخطة والقيمة المهنية.
-- ممنوع استخدام عبارات عامة جاهزة أو نص يصلح لأي مشروع آخر (لا نسخ ولصق).
-- ممنوع المبالغة أو تقديم وعود لا يمكن الوفاء بها بدقة — كن شفافاً وواقعياً
-  تماماً بخصوص ما يمكن تنفيذه.
-- لا تفرض أو تحشر تقنيات بعينها مثل OOP أو Python أو أي تقنية أخرى في كل عرض.
-  اذكر التقنيات فقط إذا طلبها العميل صراحة في وصف المشروع، أو إذا كانت مطلوبة
-  بشكل مباشر وحاسم لتنفيذ الحل. عند ذكر تقنية، اربطها بسياق المشروع تحديداً
-  دون سرد قائمة مهارات عامة.
-- أسلوب واثق ومهني دون تكلف.
-- طوله لا يتجاوز 180 كلمة.
-- لا تضع أي عناوين أقسام أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ مباشرة.
+قواعد صارمة وإلزامية:
+1. ممنوع منعاً باتاً ذكر أي رقم أو إشارة تخص السعر، التكلفة، الميزانية،
+   أو مدة التسليم/عدد الأيام في أي مكان من نص العرض — تحت أي ظرف ولأي
+   سبب. هذه المعلومات موجودة في حقول منفصلة خارج نص العرض على المنصة،
+   وذكرها داخل النص يخالف قواعد مستقل. لا تكتب حتى عبارات عامة تلمّح
+   لذلك مثل "سعر مناسب" أو "خلال مدة قصيرة" — تجنب الموضوع كلياً.
+2. ممنوع حشو المهارات أو ذكرها بشكل روتيني في كل عرض — فقط ما يرتبط
+   تحديداً بهذا المشروع كما هو موضح أعلاه.
+3. اكتب بأسلوب إنساني طبيعي ومرن كما يكتب مستقل محترف حقيقي، وليس بأسلوب
+   جامد أو نمطي يبدو آلياً أو مولداً تلقائياً. تجنب الجمل الجاهزة
+   المكررة والعبارات الفضفاضة.
+4. لا تبالغ ولا تعد بما لا يمكنك تنفيذه بدقة — كن شفافاً وواقعياً.
+5. طوله لا يتجاوز 180 كلمة.
+6. لا تضع أي عناوين أقسام أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ
+   مباشرة.
 """
     try:
         response = _generate(prompt)
@@ -615,11 +672,10 @@ def evaluate_project(
     # stricter than main.py's, a boundary-score project would clear the
     # notification check but still have no proposal to send.
     if score >= config.MATCH_THRESHOLD:
-        proposal = draft_proposal(
-            title, description, budget,
-            suggested_price=suggested_price,
-            delivery_days=delivery_days,
-        )
+        # Deliberately NOT passing suggested_price/delivery_days here — see
+        # draft_proposal()'s docstring. They still flow to Telegram via the
+        # Evaluation object below, just never into the proposal text itself.
+        proposal = draft_proposal(title, description, budget)
 
     return Evaluation(
         match_score=score,

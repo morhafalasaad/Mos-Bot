@@ -40,10 +40,20 @@ def _require(name: str, default: str | None = None) -> str:
 _env_keys_list = os.getenv("GEMINI_API_KEYS")
 _env_key_single = os.getenv("GEMINI_API_KEY")
 
+def _clean_key(k: str) -> str:
+    """Strips whitespace and stray surrounding quote characters — a common
+    mistake when pasting comma-separated values into a cloud platform's env
+    var UI (e.g. GEMINI_API_KEYS="key_one","key_two" instead of
+    GEMINI_API_KEYS=key_one,key_two), which would otherwise silently
+    produce keys with literal quote characters baked in and every request
+    failing authentication rather than hitting quota."""
+    return k.strip().strip('"').strip("'").strip()
+
+
 if _env_keys_list:
-    GEMINI_API_KEYS = [k.strip() for k in _env_keys_list.split(",") if k.strip()]
+    GEMINI_API_KEYS = [_clean_key(k) for k in _env_keys_list.split(",") if _clean_key(k)]
 elif _env_key_single:
-    GEMINI_API_KEYS = [_env_key_single.strip()]
+    GEMINI_API_KEYS = [_clean_key(_env_key_single)]
 else:
     raise EnvironmentError(
         "No Gemini API key configured. Set GEMINI_API_KEYS (comma-separated, "
