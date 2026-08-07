@@ -92,6 +92,50 @@ def build_inline_keyboard(url: str) -> dict:
     }
 
 
+def build_pending_message(
+    title: str,
+    budget: str = None,
+    duration: str = None,
+    description: str = None,
+) -> str:
+    """
+    For the 'AI evaluation paused' case (Gemini quota/rate-limit exhausted
+    on every configured key) — sent INSTANTLY when this happens, with the
+    raw scraped fields Mostaql provides (no AI score/proposal exist yet,
+    since that's exactly what failed). Deliberately mirrors
+    build_message()'s visual structure (same emoji-labeled fields, same
+    inline-button pattern via build_inline_keyboard) so it reads as the
+    same family of notification, not a different, unfamiliar format.
+    """
+    budget_line = f"\n💰 *الميزانية / السعر المحدد من العميل:* {_escape_markdown(str(budget))}" if budget else "\n💰 *الميزانية / السعر المحدد من العميل:* غير محددة"
+    duration_line = f"\n⏳ *مدة التسليم المطلوبة:* {_escape_markdown(str(duration))}" if duration else "\n⏳ *مدة التسليم المطلوبة:* غير محددة"
+    desc = description or "غير متوفر"
+    return (
+        f"⏸️ *تم إيقاف تقييم المشروع مؤقتاً — تجاوز حد Gemini API*\n\n"
+        f"📌 *اسم المشروع:* {_escape_markdown(title)}"
+        f"{budget_line}"
+        f"{duration_line}\n\n"
+        f"📝 *تفاصيل المشروع الكاملة:*\n{_to_code_block(desc)}\n\n"
+        f"_تم حفظ المشروع تلقائياً على GitHub وسيُعاد تقييمه بالذكاء الاصطناعي "
+        f"تلقائياً بمجرد تجدد الحصة — لا حاجة لأي إجراء الآن، أو يمكنك فتح "
+        f"المشروع وكتابة عرض يدوياً باستخدام الزر أدناه._"
+    )
+
+
+def notify_pending_project(
+    title: str,
+    url: str,
+    budget: str = None,
+    duration: str = None,
+    description: str = None,
+):
+    """Sends the instant 'AI evaluation paused' alert — same inline-keyboard
+    button as a successful match (build_inline_keyboard), so the tap-to-open
+    behavior is identical between the two notification types."""
+    message = build_pending_message(title, budget, duration, description)
+    send_telegram_message(message, reply_markup=build_inline_keyboard(url))
+
+
 def send_telegram_message(text: str, reply_markup: dict = None) -> bool:
     """Send a message to the configured chat, optionally with an inline
     keyboard. Returns True on success, never raises."""

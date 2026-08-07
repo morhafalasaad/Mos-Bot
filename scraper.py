@@ -171,6 +171,10 @@ class Project:
     # as tags (no extra request). None = no concern detected / unknown
     # (client is never blocked either way — see build_client_warning).
     client_warning: Optional[str] = None
+    # Client-requested delivery duration (e.g. "7 أيام"), best-effort
+    # extracted from the detail page — see parse_project_duration. None if
+    # not found/not stated.
+    duration: Optional[str] = None
 
 
 def _build_session():
@@ -560,34 +564,82 @@ def build_client_warning(client_info: dict) -> Optional[str]:
     return None
 
 
+# HONESTY NOTE (same caveat as parse_client_info above): the exact markup
+# for a project's requested delivery duration and budget on its detail page
+# is not independently verified here. Text-anchor matching against common
+# Arabic labels, fail-open (None) if nothing matches — never guessed from a
+# CSS class name.
+_DURATION_RE = re.compile(
+    r"(?:المدة المطلوبة|مدة التنفيذ|مدة التسليم|مدة تنفيذ المشروع)"
+    r"\D{0,12}(\d+)\s*(يوم|أيام|أسبوع|أسابيع|شهر|أشهر)"
+)
+_BUDGET_TEXT_RE = re.compile(
+    r"(?:الميزانية|ميزانية المشروع)[^\d$]{0,15}"
+    r"(\$?\s?[\d,]+(?:\.\d+)?(?:\s*-\s*\$?\s?[\d,]+(?:\.\d+)?)?)"
+)
+
+
+def parse_project_duration(html: str) -> Optional[str]:
+    """Best-effort extraction of the client's requested delivery duration
+    (e.g. '7 أيام') from a project detail page. Returns None if not found —
+    treat that as 'not stated/unknown', not 'no duration requested'."""
+    if not html:
+        return None
+    soup = _make_soup(html)
+    text = soup.get_text(" ", strip=True)
+    match = _DURATION_RE.search(text)
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+    return None
+
+
+def parse_project_budget(html: str) -> Optional[str]:
+    """Best-effort fallback budget extraction from a project's detail page
+    — used only when the listing-page CSS-selector strategy didn't already
+    populate project.budget (which, given the listing page's actual
+    structure, is the common case). Returns None if not found."""
+    if not html:
+        return None
+    soup = _make_soup(html)
+    text = soup.get_text(" ", strip=True)
+    match = _BUDGET_TEXT_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def fetch_project_details(session, project: Project) -> None:
     """
-    Fetches a single project's own detail page ONCE and populates BOTH
-    project.tags and project.client_warning from that same HTML — this
-    intentionally avoids a second, redundant Mostaql request for what
-    would otherwise be two separate fetches of the same page.
+    Fetches a single project's own detail page ONCE and populates ALL of
+    project.tags, project.client_warning, project.duration, and (if not
+    already set from the listing page) project.budget from that same
+    HTML — this intentionally avoids extra, redundant Mostaql requests for
+    what would otherwise be several separate fetches of the same page.
 
     This is an EXTRA Mostaql request per newly-seen project (gated by
     config.FETCH_PROJECT_TAGS), separate from the one listing-page request
     per cycle. The trade-off is intentional: it only runs for projects that
     already passed dedup and would otherwise cost a Gemini API call —
     spending one cheap Mostaql request to potentially save a Gemini call
-    (via the tag pre-filter) is the whole point; the client-info extraction
-    is a free bonus from the same page load.
+    (via the tag pre-filter) is the whole point; the client-info, duration,
+    and budget extraction are free bonuses from the same page load.
 
-    Never raises: on any failure (block, timeout, parse miss), project.tags
-    stays [] and project.client_warning stays None — both correct "unknown"
-    defaults (fail-open for the pre-filter; no false warning for the
-    client-warning system).
+    Never raises: on any failure (block, timeout, parse miss), tags stays
+    [], client_warning/duration stay None, and budget stays whatever it
+    already was — all correct "unknown" defaults.
     """
     try:
         html = fetch_page(session, project.url)
         project.tags = parse_project_tags(html)
         client_info = parse_client_info(html)
         project.client_warning = build_client_warning(client_info)
+        project.duration = parse_project_duration(html)
+        if not project.budget:
+            project.budget = parse_project_budget(html)
         logger.info(
-            "Project '%s': %s tag(s)=%s | client_warning=%s",
-            project.title, len(project.tags), project.tags, project.client_warning,
+            "Project '%s': %s tag(s)=%s | client_warning=%s | duration=%s | budget=%s",
+            project.title, len(project.tags), project.tags,
+            project.client_warning, project.duration, project.budget,
         )
     except Exception as exc:
         logger.warning("Could not fetch/parse details for %s: %s", project.url, exc)

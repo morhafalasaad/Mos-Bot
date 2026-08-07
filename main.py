@@ -70,8 +70,103 @@ logger = logging.getLogger("main")
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cycle")
 
 
+def retry_pending_github_queue():
+    """
+    Reads the GitHub-hosted pending-projects queue (see github_fallback.py)
+    and attempts to re-evaluate each entry with Gemini. This is what
+    actually implements "automatically re-evaluate once quota resets" —
+    called at the start of every cycle, before scraping new projects, so
+    a backlog gets priority attention.
+
+    - Success (AI call works this time): processed exactly like a normal
+      new-project evaluation — notified via Telegram if it clears
+      MATCH_THRESHOLD, logged either way — then removed from the queue.
+    - Still failing (still ai_failed): left in the queue for next cycle,
+      with retry_count incremented. No GitHub write happens for this case
+      alone (to avoid a wasted API call/write every cycle for an entry
+      that's simply still waiting) — only entries that change state
+      (succeed, or exceed the retry cap) trigger a queue file update.
+    - Exceeds config.GITHUB_QUEUE_MAX_RETRIES: dropped from the auto-retry
+      queue (it's still preserved in the human-readable Issue/file record
+      created when it was first queued) rather than retried forever.
+    """
+    pending = github_fallback.load_pending_queue()
+    if not pending:
+        return
+
+    logger.info("Found %s pending project(s) in the GitHub retry queue", len(pending))
+    updated_queue = []
+    queue_changed = False
+
+    for entry in pending:
+        title = entry.get("title", "?")
+        try:
+            evaluation = ai_agent.evaluate_project(
+                title=title,
+                description=entry.get("description", ""),
+                budget=entry.get("budget"),
+                tags=entry.get("tags") or [],
+            )
+        except Exception:
+            logger.error(
+                "Unexpected error re-evaluating pending project '%s':\n%s",
+                title, traceback.format_exc(),
+            )
+            evaluation = None
+
+        if evaluation is None or evaluation.ai_failed:
+            retry_count = entry.get("retry_count", 0) + 1
+            if retry_count > config.GITHUB_QUEUE_MAX_RETRIES:
+                logger.warning(
+                    "Pending project '%s' exceeded GITHUB_QUEUE_MAX_RETRIES (%s) — "
+                    "dropping from auto-retry queue (still on record in the original "
+                    "GitHub issue/file)",
+                    title, config.GITHUB_QUEUE_MAX_RETRIES,
+                )
+                queue_changed = True  # dropped -> queue file needs updating
+                continue
+            entry["retry_count"] = retry_count
+            logger.info("Pending project '%s' still unavailable — will retry next cycle (attempt %s)", title, retry_count)
+            updated_queue.append(entry)
+            continue
+
+        # Success: AI evaluation worked this time.
+        queue_changed = True
+        logger.info(
+            "Pending project '%s' successfully re-evaluated after quota reset: %.0f%%",
+            title, evaluation.match_score,
+        )
+        if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
+            notifier.notify_matched_project(
+                title=title,
+                url=entry.get("url", ""),
+                score=evaluation.match_score,
+                proposal_ar=evaluation.proposal_ar,
+                budget=entry.get("budget"),
+                suggested_price=evaluation.suggested_price,
+                delivery_days=evaluation.delivery_days,
+                client_warning=entry.get("client_warning"),
+            )
+        else:
+            logger.info(
+                "Pending project '%s' scored below threshold after re-evaluation "
+                "(%.0f%%, threshold %.0f%%) — no notification",
+                title, evaluation.match_score, config.MATCH_THRESHOLD,
+            )
+        # Either way it's now been properly evaluated, so it's removed from
+        # the queue by simply not being appended to updated_queue.
+
+    if queue_changed:
+        github_fallback.save_pending_queue(
+            updated_queue,
+            message=f"Update pending-projects queue ({len(updated_queue)} still pending)",
+        )
+
+
 def run_cycle():
     """One full monitor -> evaluate -> notify pass. Never raises."""
+    retry_pending_github_queue()
+
     new_projects = scraper.get_new_projects()
     logger.info("Cycle fetched %s new project(s) to evaluate", len(new_projects))
 
@@ -93,20 +188,33 @@ def run_cycle():
 
             # AI call itself failed (e.g. 429 RESOURCE_EXHAUSTED on every key
             # in GEMINI_API_KEYS) — distinct from a successful call that just
-            # scored the project low. Per requirements: no local storage of
-            # this project's data; send the raw scraped details straight to
-            # GitHub (issue or file, see github_fallback.py) so nothing is
-            # silently lost, then move on to the next project in this cycle.
+            # scored the project low. Per requirements:
+            #   1. No local storage — raw project data goes straight to
+            #      GitHub, both as a human-readable record (issue/file) AND
+            #      as a structured queue entry that retry_pending_github_queue()
+            #      reads back and re-evaluates automatically next cycle.
+            #   2. Instant Telegram alert with the raw scraped fields, since
+            #      there's no AI score/proposal to report yet.
+            #   3. Same inline "open project" button as a successful match.
             if evaluation.ai_failed:
-                saved = github_fallback.save_project_to_github(
+                notifier.notify_pending_project(
+                    title=project.title,
+                    url=project.url,
+                    budget=project.budget,
+                    duration=project.duration,
+                    description=project.description,
+                )
+                saved_record = github_fallback.save_project_to_github(
+                    project,
+                    reason=f"Gemini API call failed: {evaluation.reasoning}",
+                )
+                queued = github_fallback.queue_project(
                     project,
                     reason=f"Gemini API call failed: {evaluation.reasoning}",
                 )
                 logger.warning(
-                    "AI evaluation unavailable for '%s' — %s",
-                    project.title,
-                    "raw project data saved to GitHub" if saved else
-                    "GitHub fallback ALSO failed or is not configured; project data is not persisted anywhere",
+                    "AI evaluation unavailable for '%s' — record saved: %s | queued for auto-retry: %s",
+                    project.title, saved_record, queued,
                 )
                 continue
 

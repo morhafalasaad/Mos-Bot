@@ -155,6 +155,17 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "30"))
 GEMINI_MAX_TRANSIENT_RETRIES = int(os.getenv("GEMINI_MAX_TRANSIENT_RETRIES", "2"))
 GEMINI_RETRY_BACKOFF_BASE = float(os.getenv("GEMINI_RETRY_BACKOFF_BASE", "2"))  # seconds
 
+# ---- Quota (429 RESOURCE_EXHAUSTED) rotation backoff ---------------------------
+# Even with independent API keys (separate accounts/quota pools), rotating
+# through all of them within the same second can itself trip each key's
+# Requests-Per-Minute (RPM) limit — RPM is a pacing limit, not just a daily
+# cap, so switching keys instantly doesn't dodge it. Before each rotation to
+# a new key after a 429, _generate() waits GEMINI_QUOTA_BACKOFF_BASE * 2^n
+# seconds (n = how many keys have been rotated through so far in this call),
+# capped at GEMINI_QUOTA_BACKOFF_MAX, instead of rotating instantly.
+GEMINI_QUOTA_BACKOFF_BASE = float(os.getenv("GEMINI_QUOTA_BACKOFF_BASE", "2"))   # seconds
+GEMINI_QUOTA_BACKOFF_MAX = float(os.getenv("GEMINI_QUOTA_BACKOFF_MAX", "20"))    # seconds cap
+
 # ---- Watchdog: max seconds a single monitor->evaluate->notify cycle may take ---
 # If a cycle exceeds this, the main loop abandons it and moves on instead of
 # hanging forever. Should comfortably exceed (new_projects * per-project time).
@@ -177,3 +188,15 @@ GITHUB_FALLBACK_BRANCH = os.getenv("GITHUB_FALLBACK_BRANCH", "main")
 GITHUB_FALLBACK_DIR = os.getenv("GITHUB_FALLBACK_DIR", "unevaluated_projects")
 GITHUB_API_TIMEOUT = int(os.getenv("GITHUB_API_TIMEOUT", "20"))
 GITHUB_FALLBACK_ENABLED = bool(GITHUB_TOKEN and GITHUB_REPO)
+
+# Structured retry queue: separate from the human-readable Issue/file
+# record above. This JSON file in the repo is what main.py actually reads
+# back from and re-evaluates each cycle once Gemini quota/rate limits
+# allow — see github_fallback.load_pending_queue() / queue_project().
+GITHUB_QUEUE_FILE = os.getenv("GITHUB_QUEUE_FILE", "pending_projects.json")
+# Safety cap so a project that fails for a NON-quota reason (e.g. a
+# malformed description that breaks something every time) doesn't sit in
+# the queue being retried forever. After this many failed re-evaluation
+# attempts, it's dropped from the auto-retry queue (still preserved in the
+# human-readable Issue/file record from when it was first queued).
+GITHUB_QUEUE_MAX_RETRIES = int(os.getenv("GITHUB_QUEUE_MAX_RETRIES", "20"))
