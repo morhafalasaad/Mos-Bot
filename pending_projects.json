@@ -142,5 +142,26 @@
     "issue_number": 27,
     "queued_at": "2026-08-08T18:20:46.085852+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1266701",
+    "title": "تعديل تصميم موقع",
+    "description": "اريد تعديل الوان تصميم موقعي ٣ صفحات مع تعديل صورة رئيسية",
+    "url": "https://mostaql.com/project/1266701-%D8%AA%D8%B9%D8%AF%D9%8A%D9%84-%D8%AA%D8%B5%D9%85%D9%8A%D9%85-%D9%85%D9%88%D9%82%D8%B9",
+    "budget": "$25.00 - $50.00",
+    "duration": "1 يوم",
+    "tags": [
+      "تصميم موقع إلكتروني",
+      "تعديل الصور",
+      "برمجة",
+      "تطوير البرمجيات",
+      "برمجة مواقع",
+      "برمجة قواعد البيانات"
+    ],
+    "client_warning": null,
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 28,
+    "queued_at": "2026-08-08T18:20:54.967153+00:00",
+    "retry_count": 0
   }
 ]
