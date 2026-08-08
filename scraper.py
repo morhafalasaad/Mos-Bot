@@ -55,6 +55,7 @@ import requests
 from bs4 import BeautifulSoup
 
 import config
+import github_fallback
 
 logger = logging.getLogger("scraper")
 
@@ -735,7 +736,36 @@ def get_new_projects() -> List[Project]:
         logger.info("Total projects found on page this cycle: %s", len(all_projects))
 
         seen = _load_seen()
-        new_projects = [p for p in all_projects if p.id not in seen]
+
+        # Cross-reference against projects already tracked in GitHub's
+        # pending-retry queue (github_fallback.py). This matters because
+        # config.SEEN_PROJECTS_FILE lives on LOCAL disk, which is EPHEMERAL
+        # on Render (wiped on every redeploy/restart). Without this check,
+        # a restart would make every already-GitHub-queued project look
+        # "new" again on the next scrape — it would get evaluated a SECOND
+        # time here, while main.py's GitHub retry workers ALSO process the
+        # same project from the queue, producing duplicate Telegram
+        # messages for one project. Checking the durable, GitHub-hosted
+        # queue closes that gap regardless of what survived on local disk.
+        try:
+            github_tracked_ids = {
+                entry.get("id") for entry in github_fallback.load_pending_queue()
+                if entry.get("id")
+            }
+        except Exception as exc:
+            logger.warning("Could not check GitHub pending queue for dedup: %s", exc)
+            github_tracked_ids = set()
+
+        new_projects = [
+            p for p in all_projects
+            if p.id not in seen and p.id not in github_tracked_ids
+        ]
+        if github_tracked_ids:
+            logger.info(
+                "Excluded %s project(s) already tracked in the GitHub retry "
+                "queue from this cycle's 'new' list",
+                len(set(p.id for p in all_projects) & github_tracked_ids),
+            )
 
         if new_projects:
             seen.update(p.id for p in new_projects)

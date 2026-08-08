@@ -196,33 +196,62 @@ class Evaluation:
     ai_failed: bool = False
 
 
+def _extract_retry_delay_seconds(exc: Exception) -> Optional[float]:
+    """
+    Reads Google's own suggested wait time out of a 429 error's response
+    body (a google.rpc.RetryInfo detail with a retryDelay like '13s'), when
+    present, so _generate() can respect the server's actual guidance
+    instead of guessing blindly with pure exponential backoff. Returns None
+    if not present or not parseable — never raises.
+    """
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    try:
+        error_body = details.get("error", details)
+        for item in error_body.get("details", []) or []:
+            if isinstance(item, dict) and "RetryInfo" in str(item.get("@type", "")):
+                match = re.match(r"([\d.]+)\s*s", str(item.get("retryDelay", "")))
+                if match:
+                    return float(match.group(1))
+    except (AttributeError, TypeError):
+        pass
+    return None
+
+
 def _generate(prompt: str, json_mode: bool = False):
     """
-    Calls the currently active Gemini API key/client, with two distinct
-    retry strategies layered together:
+    Calls the currently active Gemini API key/client. Three retry
+    strategies, each scoped to attempts on a SINGLE key (counters reset for
+    every new key, so none of them can leak into or interfere with each
+    other across a rotation):
 
-      - Quota error (429/RESOURCE_EXHAUSTED): wait with exponential backoff
-        (GEMINI_QUOTA_BACKOFF_BASE * 2^n, capped at GEMINI_QUOTA_BACKOFF_MAX)
-        BEFORE rotating to the next key. Even independent keys (separate
-        accounts) can each have a Requests-Per-Minute limit, not just a
-        daily cap — rotating through all of them within the same second can
-        trip that RPM limit on each one in turn, so a short pause between
-        rotations is what actually avoids the error, not just a different
-        key.
+      - Quota error (429/RESOURCE_EXHAUSTED) WITH a server-provided
+        retryDelay: wait exactly that (capped at GEMINI_QUOTA_BACKOFF_MAX),
+        retry the SAME key, up to GEMINI_MAX_QUOTA_SAME_KEY_RETRIES times.
+        A short server-suggested delay usually means a transient per-minute
+        limit worth waiting out rather than immediately burning a rotation.
+      - Quota error WITHOUT a usable retryDelay (or same-key retries used
+        up): this key is now considered exhausted. Wait with our own
+        exponential backoff (GEMINI_QUOTA_BACKOFF_BASE * 2^n, capped at
+        GEMINI_QUOTA_BACKOFF_MAX) before rotating — avoids bursting through
+        every remaining key within the same second and tripping each one's
+        RPM limit in turn.
       - Transient error (504/DEADLINE_EXCEEDED/503/500): retry the SAME key
         with its own short exponential backoff, up to
-        config.GEMINI_MAX_TRANSIENT_RETRIES times. Only after exhausting
-        those retries does it also rotate to the next key as a last resort.
+        config.GEMINI_MAX_TRANSIENT_RETRIES times, before rotating.
       - Anything else: raised immediately, no retry/rotation wasted on a
         genuinely broken request.
 
-    Bounded to at most n_keys * (1 + GEMINI_MAX_TRANSIENT_RETRIES) attempts
-    total, so this always eventually returns or raises. Raises the last
-    exception if every key/retry combination is exhausted; callers
+    Bounded (each key gets at most 1 + GEMINI_MAX_QUOTA_SAME_KEY_RETRIES +
+    GEMINI_MAX_TRANSIENT_RETRIES attempts, across at most n_keys keys), so
+    this always eventually returns or raises. Only once EVERY key has been
+    fully exhausted does this raise the last exception — callers
     (score_project/draft_proposal) catch that and return None, which
-    evaluate_project() turns into Evaluation(ai_failed=True) — main.py uses
-    that flag to trigger the GitHub fallback (github_fallback.py) instead of
-    the normal Telegram notification path.
+    evaluate_project() turns into Evaluation(ai_failed=True). THAT is the
+    one and only point where main.py's GitHub fallback (Telegram alert +
+    Issue/queue) gets triggered — never on an individual key's first 429,
+    and never before rotation has had a full chance to work.
     """
     global _client, _current_key_index
 
@@ -231,10 +260,12 @@ def _generate(prompt: str, json_mode: bool = False):
 
     last_exc: Optional[Exception] = None
     keys_tried = 0
-    quota_rotations = 0  # drives the exponential backoff, separate from transient_attempt
 
     while keys_tried < n_keys:
-        for transient_attempt in range(config.GEMINI_MAX_TRANSIENT_RETRIES + 1):
+        transient_attempt = 0
+        quota_same_key_attempts = 0
+
+        while True:  # attempts on the CURRENT key only
             try:
                 return _client.models.generate_content(
                     model=config.GEMINI_MODEL,
@@ -245,47 +276,62 @@ def _generate(prompt: str, json_mode: bool = False):
                 last_exc = exc
 
                 if _is_quota_error(exc):
-                    quota_rotations += 1
+                    retry_delay = _extract_retry_delay_seconds(exc)
+                    if retry_delay is not None and quota_same_key_attempts < config.GEMINI_MAX_QUOTA_SAME_KEY_RETRIES:
+                        quota_same_key_attempts += 1
+                        wait = min(retry_delay, config.GEMINI_QUOTA_BACKOFF_MAX)
+                        logger.warning(
+                            "Gemini key #%s hit quota (429) with a server-suggested "
+                            "retryDelay=%.1fs — waiting and retrying the SAME key "
+                            "(attempt %s/%s) before treating it as exhausted",
+                            _current_key_index + 1, wait,
+                            quota_same_key_attempts, config.GEMINI_MAX_QUOTA_SAME_KEY_RETRIES,
+                        )
+                        time.sleep(wait)
+                        continue  # retry same key
+
+                    # No usable server-provided delay, or same-key retries
+                    # already used up — this key is done. Back off (avoids
+                    # tripping the NEXT key's RPM limit too), then rotate.
                     wait = min(
-                        config.GEMINI_QUOTA_BACKOFF_BASE * (2 ** (quota_rotations - 1)),
+                        config.GEMINI_QUOTA_BACKOFF_BASE * (2 ** keys_tried),
                         config.GEMINI_QUOTA_BACKOFF_MAX,
                     )
                     logger.warning(
-                        "Gemini API key #%s hit quota/rate limit (429 RESOURCE_EXHAUSTED) "
-                        "— waiting %.1fs before rotating (avoids bursting through all "
-                        "keys within the same second and tripping each one's RPM limit "
-                        "in turn)",
+                        "Gemini API key #%s exhausted (429 RESOURCE_EXHAUSTED, no "
+                        "further server-suggested delay to respect) — waiting "
+                        "%.1fs before rotating to the next key",
                         _current_key_index + 1, wait,
                     )
                     time.sleep(wait)
-                    break  # stop retrying this key on this error; rotate below
+                    break  # stop attempts on this key; rotate below
 
                 if _is_transient_error(exc):
                     if transient_attempt < config.GEMINI_MAX_TRANSIENT_RETRIES:
                         wait = config.GEMINI_RETRY_BACKOFF_BASE * (transient_attempt + 1)
+                        transient_attempt += 1
                         logger.warning(
-                            "Transient Gemini error (%s: %s) on key #%s — retrying same "
-                            "key in %ss (attempt %s/%s)",
+                            "Transient Gemini error (%s: %s) on key #%s — retrying "
+                            "same key in %ss (attempt %s/%s)",
                             type(exc).__name__, exc, _current_key_index + 1,
-                            wait, transient_attempt + 1, config.GEMINI_MAX_TRANSIENT_RETRIES,
+                            wait, transient_attempt, config.GEMINI_MAX_TRANSIENT_RETRIES,
                         )
                         time.sleep(wait)
                         continue  # retry same key
-                    else:
-                        logger.warning(
-                            "Transient Gemini error persisted after %s retries on key #%s "
-                            "— rotating key as a last resort",
-                            config.GEMINI_MAX_TRANSIENT_RETRIES, _current_key_index + 1,
-                        )
-                        break  # exhausted retries on this key; fall through to rotation below
+                    logger.warning(
+                        "Transient Gemini error persisted after %s retries on key "
+                        "#%s — rotating key as a last resort",
+                        config.GEMINI_MAX_TRANSIENT_RETRIES, _current_key_index + 1,
+                    )
+                    break  # exhausted transient retries on this key; rotate below
 
                 # Not a quota error, and not a (recognized) transient error
                 # at all — not worth retrying or rotating for. Raise immediately.
                 logger.error("Non-retryable Gemini error: %s", exc, exc_info=True)
                 raise
 
-        # Reached only via the quota `break` above, or after exhausting
-        # transient retries on this key without success. This key is done.
+        # Reached only via one of the `break`s above — this key is fully
+        # done (quota-exhausted or transient-exhausted).
         keys_tried += 1
 
         # Find the next USABLE key, skipping any that fail to even build a
@@ -311,8 +357,11 @@ def _generate(prompt: str, json_mode: bool = False):
             break  # no usable key left to rotate to
 
     logger.error(
-        "All %s Gemini API key(s) exhausted (quota and/or repeated transient errors). "
-        "Last error: %s", n_keys, last_exc,
+        "All %s Gemini API key(s) fully exhausted (quota and/or repeated "
+        "transient errors, or failed to initialize) — THIS is the only "
+        "point where the GitHub fallback (Telegram alert + Issue/queue) "
+        "gets triggered, never on any single key's first failure. Last "
+        "error: %s", n_keys, last_exc,
     )
     raise last_exc if last_exc else RuntimeError("No Gemini API keys available")
 

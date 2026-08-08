@@ -165,6 +165,13 @@ GEMINI_RETRY_BACKOFF_BASE = float(os.getenv("GEMINI_RETRY_BACKOFF_BASE", "2"))  
 # capped at GEMINI_QUOTA_BACKOFF_MAX, instead of rotating instantly.
 GEMINI_QUOTA_BACKOFF_BASE = float(os.getenv("GEMINI_QUOTA_BACKOFF_BASE", "2"))   # seconds
 GEMINI_QUOTA_BACKOFF_MAX = float(os.getenv("GEMINI_QUOTA_BACKOFF_MAX", "20"))    # seconds cap
+# When a 429 response includes Google's own suggested retryDelay (e.g.
+# "13s"), that's respected on the SAME key before considering it exhausted
+# and rotating — up to this many times per key. A short server-suggested
+# delay usually means a transient per-minute limit that will clear shortly,
+# which is worth waiting out rather than immediately burning a key
+# rotation for. Capped by GEMINI_QUOTA_BACKOFF_MAX either way.
+GEMINI_MAX_QUOTA_SAME_KEY_RETRIES = int(os.getenv("GEMINI_MAX_QUOTA_SAME_KEY_RETRIES", "1"))
 
 # ---- Watchdog: max seconds a single monitor->evaluate->notify cycle may take ---
 # If a cycle exceeds this, the main loop abandons it and moves on instead of
