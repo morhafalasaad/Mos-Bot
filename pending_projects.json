@@ -22,31 +22,7 @@
     "reason": "Gemini API call failed: AI scoring unavailable (error).",
     "issue_number": 10,
     "queued_at": "2026-08-08T18:09:03.339344+00:00",
-    "retry_count": 0
-  },
-  {
-    "id": "1266756",
-    "title": "بحاجة لشخص يساعدني بتوزيع استبيان علمي في مجال هندسة البرمجيات",
-    "description": "بحاجة إلى شخص يساعدني بتوزيع وتعبئة استبيان مفصص لبحث في مجال هندسة البرمجيات الإستبيان على شكل google form وبالتالي يمكن توزيعه اونلاين",
-    "url": "https://mostaql.com/project/1266756-%D8%A8%D8%AD%D8%A7%D8%AC%D8%A9-%D9%84%D8%B4%D8%AE%D8%B5-%D9%8A%D8%B3%D8%A7%D8%B9%D8%AF%D9%86%D9%8A-%D8%A8%D8%AA%D9%88%D8%B2%D9%8A%D8%B9-%D8%A7%D8%B3%D8%AA%D8%A8%D9%8A%D8%A7%D9%86-%D8%B9%D9%84%D9%85%D9%8A-%D9%81%D9%8A-%D9%85%D8%AC%D8%A7%D9%84-%D9%87%D9%86%D8%AF%D8%B3%D8%A9-%D8%A7%D9%84%D8%A8%D8%B1%D9%85%D8%AC%D9%8A%D8%A7%D8%AA",
-    "budget": "$25.00 - $50.00",
-    "duration": "5 أيام",
-    "tags": [
-      "معالجة البيانات",
-      "الهندسة",
-      "برمجة",
-      "تطوير البرمجيات",
-      "برمجة مواقع",
-      "برمجة أندرويد",
-      "برمجة قواعد البيانات",
-      "برمجة التطبيقات",
-      "هندسة البرمجيات"
-    ],
-    "client_warning": null,
-    "reason": "Gemini API call failed: AI scoring unavailable (error).",
-    "issue_number": 11,
-    "queued_at": "2026-08-08T18:09:17.218132+00:00",
-    "retry_count": 0
+    "retry_count": 1
   },
   {
     "id": "1263983",
@@ -70,7 +46,7 @@
     "reason": "Gemini API call failed: AI scoring unavailable (error).",
     "issue_number": 12,
     "queued_at": "2026-08-08T18:09:26.018677+00:00",
-    "retry_count": 0
+    "retry_count": 1
   },
   {
     "id": "1266733",
@@ -96,7 +72,7 @@
     "reason": "Gemini API call failed: AI scoring unavailable (error).",
     "issue_number": 13,
     "queued_at": "2026-08-08T18:09:35.004501+00:00",
-    "retry_count": 0
+    "retry_count": 1
   },
   {
     "id": "1266729",
@@ -117,27 +93,6 @@
     "reason": "Gemini API call failed: AI scoring unavailable (error).",
     "issue_number": 14,
     "queued_at": "2026-08-08T18:09:43.791132+00:00",
-    "retry_count": 0
-  },
-  {
-    "id": "1266701",
-    "title": "تعديل تصميم موقع",
-    "description": "اريد تعديل الوان تصميم موقعي ٣ صفحات مع تعديل صورة رئيسية",
-    "url": "https://mostaql.com/project/1266701-%D8%AA%D8%B9%D8%AF%D9%8A%D9%84-%D8%AA%D8%B5%D9%85%D9%8A%D9%85-%D9%85%D9%88%D9%82%D8%B9",
-    "budget": "$25.00 - $50.00",
-    "duration": "1 يوم",
-    "tags": [
-      "تصميم موقع إلكتروني",
-      "تعديل الصور",
-      "برمجة",
-      "تطوير البرمجيات",
-      "برمجة مواقع",
-      "برمجة قواعد البيانات"
-    ],
-    "client_warning": null,
-    "reason": "Gemini API call failed: AI scoring unavailable (error).",
-    "issue_number": 15,
-    "queued_at": "2026-08-08T18:09:52.704981+00:00",
-    "retry_count": 0
+    "retry_count": 1
   }
 ]
