@@ -94,5 +94,29 @@
     "issue_number": 16,
     "queued_at": "2026-08-08T18:14:35.976555+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1266762",
+    "title": "خبير Meta API لاجتياز مراجعة تطبيق واتساب (Meta App Review) لمنصة SaaS",
+    "description": "لدينا منصة SaaS قائمة لإدارة محادثات واتساب والأتمتة )، وتتضمن الربط البرمجي المباشر مع Meta WhatsApp Business API. نحتاج إلى مستشار/مطور متخصص يمتلك خبرة عملية سابقة لمساعدتنا في تجهيز واجتياز عملية مراجعة التطبيق (Meta App Review) والحصول على جميع الصلاحيات والأذونات المطلوبة بنجاح. المهام والمسؤوليات المطلوبة: مراجعة وتجهيز تطبيق ميتا (Meta App Review): إعداد وتكوين كافة إعدادات التطبيق داخل لوحة Meta for Developers. تحديد واختيار الصلاحيات ال...",
+    "url": "https://mostaql.com/project/1266762-%D8%AE%D8%A8%D9%8A%D8%B1-meta-api-%D9%84%D8%A7%D8%AC%D8%AA%D9%8A%D8%A7%D8%B2-%D9%85%D8%B1%D8%A7%D8%AC%D8%B9%D8%A9-%D8%AA%D8%B7%D8%A8%D9%8A%D9%82-%D9%88%D8%A7%D8%AA%D8%B3%D8%A7%D8%A8-meta-app-review-%D9%84%D9%85%D9%86%D8%B5%D8%A9-saas",
+    "budget": "$100.00 - $250.00",
+    "duration": "5 أيام",
+    "tags": [
+      "خدمة العملاء",
+      "البحث والتطوير",
+      "تطوير البرمجيات",
+      "برمجة مواقع",
+      "برمجة قواعد البيانات",
+      "برمجة",
+      "برمجة التطبيقات",
+      "هندسة البرمجيات",
+      "flutter"
+    ],
+    "client_warning": null,
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 17,
+    "queued_at": "2026-08-08T18:14:44.857597+00:00",
+    "retry_count": 0
   }
 ]
