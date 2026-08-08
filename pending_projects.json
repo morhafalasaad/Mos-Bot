@@ -1,29 +1,5 @@
 [
   {
-    "id": "1266762",
-    "title": "خبير Meta API لاجتياز مراجعة تطبيق واتساب (Meta App Review) لمنصة SaaS",
-    "description": "لدينا منصة SaaS قائمة لإدارة محادثات واتساب والأتمتة )، وتتضمن الربط البرمجي المباشر مع Meta WhatsApp Business API. نحتاج إلى مستشار/مطور متخصص يمتلك خبرة عملية سابقة لمساعدتنا في تجهيز واجتياز عملية مراجعة التطبيق (Meta App Review) والحصول على جميع الصلاحيات والأذونات المطلوبة بنجاح. المهام والمسؤوليات المطلوبة: مراجعة وتجهيز تطبيق ميتا (Meta App Review): إعداد وتكوين كافة إعدادات التطبيق داخل لوحة Meta for Developers. تحديد واختيار الصلاحيات ال...",
-    "url": "https://mostaql.com/project/1266762-%D8%AE%D8%A8%D9%8A%D8%B1-meta-api-%D9%84%D8%A7%D8%AC%D8%AA%D9%8A%D8%A7%D8%B2-%D9%85%D8%B1%D8%A7%D8%AC%D8%B9%D8%A9-%D8%AA%D8%B7%D8%A8%D9%8A%D9%82-%D9%88%D8%A7%D8%AA%D8%B3%D8%A7%D8%A8-meta-app-review-%D9%84%D9%85%D9%86%D8%B5%D8%A9-saas",
-    "budget": "$100.00 - $250.00",
-    "duration": "5 أيام",
-    "tags": [
-      "خدمة العملاء",
-      "البحث والتطوير",
-      "تطوير البرمجيات",
-      "برمجة مواقع",
-      "برمجة قواعد البيانات",
-      "برمجة",
-      "برمجة التطبيقات",
-      "هندسة البرمجيات",
-      "flutter"
-    ],
-    "client_warning": null,
-    "reason": "Gemini API call failed: AI scoring unavailable (error).",
-    "issue_number": 23,
-    "queued_at": "2026-08-08T18:20:10.741284+00:00",
-    "retry_count": 0
-  },
-  {
     "id": "1266756",
     "title": "بحاجة لشخص يساعدني بتوزيع استبيان علمي في مجال هندسة البرمجيات",
     "description": "بحاجة إلى شخص يساعدني بتوزيع وتعبئة استبيان مفصص لبحث في مجال هندسة البرمجيات الإستبيان على شكل google form وبالتالي يمكن توزيعه اونلاين",
@@ -162,6 +138,30 @@
     "reason": "Gemini API call failed: AI scoring unavailable (error).",
     "issue_number": 29,
     "queued_at": "2026-08-08T18:26:08.011164+00:00",
+    "retry_count": 0
+  },
+  {
+    "id": "1266762",
+    "title": "خبير Meta API لاجتياز مراجعة تطبيق واتساب (Meta App Review) لمنصة SaaS",
+    "description": "لدينا منصة SaaS قائمة لإدارة محادثات واتساب والأتمتة )، وتتضمن الربط البرمجي المباشر مع Meta WhatsApp Business API. نحتاج إلى مستشار/مطور متخصص يمتلك خبرة عملية سابقة لمساعدتنا في تجهيز واجتياز عملية مراجعة التطبيق (Meta App Review) والحصول على جميع الصلاحيات والأذونات المطلوبة بنجاح. المهام والمسؤوليات المطلوبة: مراجعة وتجهيز تطبيق ميتا (Meta App Review): إعداد وتكوين كافة إعدادات التطبيق داخل لوحة Meta for Developers. تحديد واختيار الصلاحيات ال...",
+    "url": "https://mostaql.com/project/1266762-%D8%AE%D8%A8%D9%8A%D8%B1-meta-api-%D9%84%D8%A7%D8%AC%D8%AA%D9%8A%D8%A7%D8%B2-%D9%85%D8%B1%D8%A7%D8%AC%D8%B9%D8%A9-%D8%AA%D8%B7%D8%A8%D9%8A%D9%82-%D9%88%D8%A7%D8%AA%D8%B3%D8%A7%D8%A8-meta-app-review-%D9%84%D9%85%D9%86%D8%B5%D8%A9-saas",
+    "budget": "$100.00 - $250.00",
+    "duration": "5 أيام",
+    "tags": [
+      "خدمة العملاء",
+      "البحث والتطوير",
+      "تطوير البرمجيات",
+      "برمجة مواقع",
+      "برمجة قواعد البيانات",
+      "برمجة",
+      "برمجة التطبيقات",
+      "هندسة البرمجيات",
+      "flutter"
+    ],
+    "client_warning": null,
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 30,
+    "queued_at": "2026-08-08T18:26:16.520992+00:00",
     "retry_count": 0
   }
 ]
