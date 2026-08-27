@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+seen_projects.json
+token_usage_stats.json
+.venv/
+venv/
+*.log
+.DS_Store
+.idea/
+.vscode/
