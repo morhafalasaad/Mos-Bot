@@ -26,5 +26,47 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 30.039
+  },
+  {
+    "timestamp": "2026-08-27T21:25:51Z",
+    "project_title": "تصميم برزنتيشن 8 صفحات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1118,
+    "output_tokens": 383,
+    "total_tokens": 1501,
+    "original_desc_length": 154,
+    "truncated_desc_length": 154,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 25.379
+  },
+  {
+    "timestamp": "2026-08-27T21:25:52Z",
+    "project_title": "عمل تصميم جذاب لمواد علمية خاص بدورة لغة انجليزية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 350,
+    "output_tokens": 72,
+    "total_tokens": 422,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.921
+  },
+  {
+    "timestamp": "2026-08-27T21:25:53Z",
+    "project_title": "تعديل على برنامج إدارة السفارة",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 252,
+    "output_tokens": 69,
+    "total_tokens": 321,
+    "original_desc_length": 183,
+    "truncated_desc_length": 183,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.796
   }
 ]
