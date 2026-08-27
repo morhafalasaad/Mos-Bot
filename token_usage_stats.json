@@ -26,5 +26,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 30.039
+  },
+  {
+    "timestamp": "2026-08-27T21:17:28Z",
+    "project_title": "تصميم برزنتيشن 8 صفحات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1118,
+    "output_tokens": 343,
+    "total_tokens": 1461,
+    "original_desc_length": 154,
+    "truncated_desc_length": 154,
+    "match_score": 90.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 10.095
+  },
+  {
+    "timestamp": "2026-08-27T21:17:58Z",
+    "project_title": "عمل تصميم جذاب لمواد علمية خاص بدورة لغة انجليزية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 350,
+    "output_tokens": 73,
+    "total_tokens": 423,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 28.388
   }
 ]
