@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": "2026-08-27T21:09:31Z",
+    "project_title": "تصميم برزنتيشن 8 صفحات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 154,
+    "truncated_desc_length": 154,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 30.045
+  },
+  {
+    "timestamp": "2026-08-27T21:10:01Z",
+    "project_title": "عمل تصميم جذاب لمواد علمية خاص بدورة لغة انجليزية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 30.039
+  }
+]
