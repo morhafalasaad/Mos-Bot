@@ -194,5 +194,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.025
+  },
+  {
+    "timestamp": "2026-08-28T19:29:43Z",
+    "project_title": "مطور WordPress لبناء موقع تعريفي بسيط لشركة أدوات صحية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 320,
+    "output_tokens": 67,
+    "total_tokens": 387,
+    "original_desc_length": 344,
+    "truncated_desc_length": 344,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.416
   }
 ]
