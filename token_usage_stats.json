@@ -236,5 +236,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.861
+  },
+  {
+    "timestamp": "2026-08-28T21:36:27Z",
+    "project_title": "تصميم موقعين الكترونين داخل دومين واحد عقاري",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 300,
+    "output_tokens": 73,
+    "total_tokens": 373,
+    "original_desc_length": 332,
+    "truncated_desc_length": 332,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.882
   }
 ]
