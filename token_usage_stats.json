@@ -208,5 +208,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.416
+  },
+  {
+    "timestamp": "2026-08-28T20:56:48Z",
+    "project_title": "تطوير نظام Odoo ERP",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1295,
+    "output_tokens": 375,
+    "total_tokens": 1670,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.404
+  },
+  {
+    "timestamp": "2026-08-28T20:56:49Z",
+    "project_title": "استشاري خبير odoo لإعداد الشروط المرجعية (TOR) والهيكلة التقنية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 362,
+    "output_tokens": 71,
+    "total_tokens": 433,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.861
   }
 ]
