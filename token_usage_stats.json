@@ -138,5 +138,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 22.272
+  },
+  {
+    "timestamp": "2026-08-28T14:48:17Z",
+    "project_title": "تعديل قسم Best Sellers في متجر إلكتروني باستخدام Next.js",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 263,
+    "output_tokens": 65,
+    "total_tokens": 328,
+    "original_desc_length": 214,
+    "truncated_desc_length": 214,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.782
   }
 ]
