@@ -180,5 +180,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.031
+  },
+  {
+    "timestamp": "2026-08-28T18:28:12Z",
+    "project_title": "تعديل صور",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 212,
+    "output_tokens": 76,
+    "total_tokens": 288,
+    "original_desc_length": 63,
+    "truncated_desc_length": 63,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.025
   }
 ]
