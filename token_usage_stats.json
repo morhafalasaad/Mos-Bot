@@ -1034,5 +1034,61 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 33.377
+  },
+  {
+    "timestamp": "2026-08-29T18:08:06Z",
+    "project_title": "ربط برمجي لمساعد ذكاء صناعي لتنفيذ الاعمال",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 348,
+    "output_tokens": 72,
+    "total_tokens": 420,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 45.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 18.759
+  },
+  {
+    "timestamp": "2026-08-29T18:08:56Z",
+    "project_title": "تطوير نسخة أولى عملية وقابلة للإطلاق MVP من منصة GeriExams",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 358,
+    "output_tokens": 89,
+    "total_tokens": 447,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 30.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 49.442
+  },
+  {
+    "timestamp": "2026-08-29T18:09:50Z",
+    "project_title": "تصميم حقيبة تدريبية بعنوان المواطنة الرقمية والتثقيف الرقمي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1164,
+    "output_tokens": 416,
+    "total_tokens": 1580,
+    "original_desc_length": 203,
+    "truncated_desc_length": 203,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 54.121
+  },
+  {
+    "timestamp": "2026-08-29T18:10:03Z",
+    "project_title": "منصة  تعليمية لشراء كورسات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 285,
+    "output_tokens": 102,
+    "total_tokens": 387,
+    "original_desc_length": 271,
+    "truncated_desc_length": 271,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 12.495
   }
 ]
