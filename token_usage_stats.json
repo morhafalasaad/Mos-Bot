@@ -656,5 +656,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 32.781
+  },
+  {
+    "timestamp": "2026-08-29T12:19:39Z",
+    "project_title": "تحويل نماذج لموقع الإلكتروني",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 222,
+    "output_tokens": 75,
+    "total_tokens": 297,
+    "original_desc_length": 86,
+    "truncated_desc_length": 86,
+    "match_score": 45.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.096
   }
 ]
