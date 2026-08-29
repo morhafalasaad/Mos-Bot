@@ -250,5 +250,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.882
+  },
+  {
+    "timestamp": "2026-08-29T06:41:25Z",
+    "project_title": "مطور لرفع تطبيقات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 334,
+    "output_tokens": 76,
+    "total_tokens": 410,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.867
   }
 ]
