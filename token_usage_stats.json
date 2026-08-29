@@ -264,5 +264,47 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.867
+  },
+  {
+    "timestamp": "2026-08-29T06:48:18Z",
+    "project_title": "مستقل فاهم في منصة سلة لحل مشكلة في أسعار المنتجات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 370,
+    "output_tokens": 63,
+    "total_tokens": 433,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 19.94
+  },
+  {
+    "timestamp": "2026-08-29T06:48:38Z",
+    "project_title": "تعديل على مشروع Node.js جاهز",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 232,
+    "output_tokens": 63,
+    "total_tokens": 295,
+    "original_desc_length": 132,
+    "truncated_desc_length": 132,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 19.613
+  },
+  {
+    "timestamp": "2026-08-29T06:48:48Z",
+    "project_title": "مبرمج unity لتحسين أداء وسرعة لعبة",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 336,
+    "output_tokens": 65,
+    "total_tokens": 401,
+    "original_desc_length": 452,
+    "truncated_desc_length": 452,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 9.869
   }
 ]
