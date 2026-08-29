@@ -432,5 +432,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 61.676
+  },
+  {
+    "timestamp": "2026-08-29T11:42:08Z",
+    "project_title": "مصمم شوبيفاي لإعادة تصميم موقع جاهز",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 47,
+    "truncated_desc_length": 47,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 95.905
   }
 ]
