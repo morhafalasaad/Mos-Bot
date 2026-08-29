@@ -992,5 +992,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.879
+  },
+  {
+    "timestamp": "2026-08-29T14:33:22Z",
+    "project_title": "إنشاء قائمة مراجعة أمنية تساعد الشركات الصغيرة على مراجعة حماية الشبكات الخاصة بها",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 289,
+    "output_tokens": 71,
+    "total_tokens": 360,
+    "original_desc_length": 273,
+    "truncated_desc_length": 273,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 10.435
   }
 ]
