@@ -404,5 +404,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.873
+  },
+  {
+    "timestamp": "2026-08-29T10:32:38Z",
+    "project_title": "تعليم عن بعد",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1192,
+    "output_tokens": 419,
+    "total_tokens": 1611,
+    "original_desc_length": 294,
+    "truncated_desc_length": 294,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 2.785
   }
 ]
