@@ -1092,21 +1092,21 @@
     "response_time_sec": 12.495
   },
   {
-    "timestamp": "2026-08-29T21:19:47Z",
-    "project_title": "تطوير نسخة أولى عملية وقابلة للإطلاق MVP من منصة GeriExams",
+    "timestamp": "2026-08-29T21:18:01Z",
+    "project_title": "تطوير تطبيق ولوحة تحكم متكاملة لإدارة العقارات والحجوزات والمضيفين",
     "key_alias": "Gemini key #1",
-    "prompt_tokens": 358,
-    "output_tokens": 91,
-    "total_tokens": 449,
+    "prompt_tokens": 352,
+    "output_tokens": 94,
+    "total_tokens": 446,
     "original_desc_length": 453,
     "truncated_desc_length": 453,
     "match_score": 15.0,
     "sent_to_telegram": false,
     "proposal_generated": false,
-    "response_time_sec": 0.866
+    "response_time_sec": 0.908
   },
   {
-    "timestamp": "2026-08-29T21:20:21Z",
+    "timestamp": "2026-08-29T21:18:32Z",
     "project_title": "تطوير نسخة أولى عملية وقابلة للإطلاق MVP من منصة GeriExams",
     "key_alias": "Gemini key #1",
     "prompt_tokens": 0,
@@ -1117,6 +1117,6 @@
     "match_score": null,
     "sent_to_telegram": false,
     "proposal_generated": false,
-    "response_time_sec": 30.049
+    "response_time_sec": 30.045
   }
 ]
