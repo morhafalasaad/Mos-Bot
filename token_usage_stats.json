@@ -320,5 +320,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 3.08
+  },
+  {
+    "timestamp": "2026-08-29T08:03:01Z",
+    "project_title": "إعادة تصميم عروض بوربوينت جاهزة وفق هوية جديدة",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1203,
+    "output_tokens": 363,
+    "total_tokens": 1566,
+    "original_desc_length": 299,
+    "truncated_desc_length": 299,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 30.251
   }
 ]
