@@ -670,5 +670,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.096
+  },
+  {
+    "timestamp": "2026-08-29T12:28:18Z",
+    "project_title": "تصميم عروض تفاعلية على البوربوينت",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 77,
+    "truncated_desc_length": 77,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 30.076
   }
 ]
