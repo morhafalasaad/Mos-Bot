@@ -642,5 +642,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 9.66
+  },
+  {
+    "timestamp": "2026-08-29T12:13:07Z",
+    "project_title": "إعداد بريد إلكتروني على دومين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 339,
+    "output_tokens": 68,
+    "total_tokens": 407,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 32.781
   }
 ]
