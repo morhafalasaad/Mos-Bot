@@ -1006,5 +1006,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 10.435
+  },
+  {
+    "timestamp": "2026-08-29T14:46:48Z",
+    "project_title": "موقع لعبة (عين العقل) لعبة جلسات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 373,
+    "output_tokens": 87,
+    "total_tokens": 460,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.293
   }
 ]
