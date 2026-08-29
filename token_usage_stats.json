@@ -418,5 +418,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 2.785
+  },
+  {
+    "timestamp": "2026-08-29T11:17:30Z",
+    "project_title": "إنشاء منصة طلب وتوصيل الطعام للمطاعم والعملاء والمندوبين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1302,
+    "output_tokens": 426,
+    "total_tokens": 1728,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 67.701
   }
 ]
