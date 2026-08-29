@@ -418,5 +418,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 2.785
+  },
+  {
+    "timestamp": "2026-08-29T11:31:15Z",
+    "project_title": "تعديل على مشروع Node.js جاهز",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 59,
+    "truncated_desc_length": 59,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 61.676
   }
 ]
