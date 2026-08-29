@@ -348,5 +348,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 2.858
+  },
+  {
+    "timestamp": "2026-08-29T09:17:57Z",
+    "project_title": "استفسار من طالب في جامعة عبد السالم في الكويت",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 316,
+    "output_tokens": 68,
+    "total_tokens": 384,
+    "original_desc_length": 418,
+    "truncated_desc_length": 418,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.902
   }
 ]
