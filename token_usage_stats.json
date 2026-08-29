@@ -476,31 +476,45 @@
     "response_time_sec": 95.826
   },
   {
-    "timestamp": "2026-08-29T11:56:40Z",
-    "project_title": "مساعد أو مساعدة إدارية محترف في تنظيم الأعمال والخدمات الرقمية",
+    "timestamp": "2026-08-29T11:51:55Z",
+    "project_title": "ربط نظام دفع بنك أو محفظة رقمية بتطبيق Marketplace",
     "key_alias": "Gemini key #1",
-    "prompt_tokens": 350,
-    "output_tokens": 72,
-    "total_tokens": 422,
+    "prompt_tokens": 345,
+    "output_tokens": 80,
+    "total_tokens": 425,
     "original_desc_length": 453,
     "truncated_desc_length": 453,
-    "match_score": 10.0,
+    "match_score": 60.0,
     "sent_to_telegram": false,
-    "proposal_generated": false,
-    "response_time_sec": 72.849
+    "proposal_generated": true,
+    "response_time_sec": 160.676
   },
   {
-    "timestamp": "2026-08-29T11:57:31Z",
-    "project_title": "مساعد أو مساعدة إدارية محترف في تنظيم الأعمال والخدمات الرقمية",
+    "timestamp": "2026-08-29T11:53:02Z",
+    "project_title": "مصمم شوبيفاي لإعادة تصميم موقع جاهز",
     "key_alias": "Gemini key #1",
-    "prompt_tokens": 350,
-    "output_tokens": 72,
-    "total_tokens": 422,
-    "original_desc_length": 453,
-    "truncated_desc_length": 453,
-    "match_score": 15.0,
+    "prompt_tokens": 217,
+    "output_tokens": 67,
+    "total_tokens": 284,
+    "original_desc_length": 47,
+    "truncated_desc_length": 47,
+    "match_score": 0.0,
     "sent_to_telegram": false,
     "proposal_generated": false,
-    "response_time_sec": 47.609
+    "response_time_sec": 66.311
+  },
+  {
+    "timestamp": "2026-08-29T11:54:39Z",
+    "project_title": "مساعد أو مساعدة إدارية محترف في تنظيم الأعمال والخدمات الرقمية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 96.014
   }
 ]
