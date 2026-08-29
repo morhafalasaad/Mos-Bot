@@ -978,5 +978,19 @@
     "sent_to_telegram": false,
     "proposal_generated": true,
     "response_time_sec": 128.346
+  },
+  {
+    "timestamp": "2026-08-29T14:19:03Z",
+    "project_title": "برمجة إضافة ووردبريس مخصصة لإنشاء المواقع بالذكاء الاصطناعي (من نص، رابط، أو صورة)",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 381,
+    "output_tokens": 80,
+    "total_tokens": 461,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.879
   }
 ]
