@@ -1020,5 +1020,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.293
+  },
+  {
+    "timestamp": "2026-08-29T15:41:14Z",
+    "project_title": "منصة  تعليمية لشراء كورسات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 285,
+    "output_tokens": 81,
+    "total_tokens": 366,
+    "original_desc_length": 271,
+    "truncated_desc_length": 271,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 33.377
   }
 ]
