@@ -306,5 +306,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 9.869
+  },
+  {
+    "timestamp": "2026-08-29T07:06:44Z",
+    "project_title": "مبرمج كفء لبناء منصة وساطة رقمية (MVP) بين المؤثرين والشركات مع نظام أتمتة الواتساب",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 367,
+    "output_tokens": 84,
+    "total_tokens": 451,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 45.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 3.08
   }
 ]
