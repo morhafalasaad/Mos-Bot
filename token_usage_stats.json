@@ -362,5 +362,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.902
+  },
+  {
+    "timestamp": "2026-08-29T09:30:21Z",
+    "project_title": "تصميم موقع إلكتروني",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 233,
+    "output_tokens": 68,
+    "total_tokens": 301,
+    "original_desc_length": 136,
+    "truncated_desc_length": 136,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.955
+  },
+  {
+    "timestamp": "2026-08-29T09:30:23Z",
+    "project_title": "مطور خبرة في الربط مع api لايك كاردLIKE CARDS لمنصة بطاقات رقمية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 353,
+    "output_tokens": 85,
+    "total_tokens": 438,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.556
   }
 ]
