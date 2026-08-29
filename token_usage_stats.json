@@ -1090,5 +1090,47 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 12.495
+  },
+  {
+    "timestamp": "2026-08-29T21:12:56Z",
+    "project_title": "تطوير تطبيق ولوحة تحكم متكاملة لإدارة العقارات والحجوزات والمضيفين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 86.773
+  },
+  {
+    "timestamp": "2026-08-29T21:13:43Z",
+    "project_title": "تطوير تطبيق ولوحة تحكم متكاملة لإدارة العقارات والحجوزات والمضيفين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 352,
+    "output_tokens": 89,
+    "total_tokens": 441,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 30.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 44.674
+  },
+  {
+    "timestamp": "2026-08-29T21:13:47Z",
+    "project_title": "تطوير تطبيق ولوحة تحكم متكاملة لإدارة العقارات والحجوزات والمضيفين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 352,
+    "output_tokens": 84,
+    "total_tokens": 436,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.734
   }
 ]
