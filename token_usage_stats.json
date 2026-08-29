@@ -390,5 +390,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.556
+  },
+  {
+    "timestamp": "2026-08-29T09:36:36Z",
+    "project_title": "15 تعديل على برنامج سطح مكتب معقد",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 261,
+    "output_tokens": 69,
+    "total_tokens": 330,
+    "original_desc_length": 205,
+    "truncated_desc_length": 205,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.873
   }
 ]
