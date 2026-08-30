@@ -1160,5 +1160,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.861
+  },
+  {
+    "timestamp": "2026-08-30T07:28:50Z",
+    "project_title": "انشاء موقع",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 318,
+    "output_tokens": 75,
+    "total_tokens": 393,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 2.253
   }
 ]
