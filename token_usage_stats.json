@@ -1384,5 +1384,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 5.43
+  },
+  {
+    "timestamp": "2026-08-30T20:20:28Z",
+    "project_title": "إنشاء أرضية ماب على منصة roblox",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 357,
+    "output_tokens": 117,
+    "total_tokens": 474,
+    "original_desc_length": 241,
+    "truncated_desc_length": 241,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.288
   }
 ]
