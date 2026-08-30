@@ -1398,5 +1398,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.288
+  },
+  {
+    "timestamp": "2026-08-30T20:56:16Z",
+    "project_title": "تصميم فكرة تطبيق على موقع فيقما",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 296,
+    "output_tokens": 122,
+    "total_tokens": 418,
+    "original_desc_length": 68,
+    "truncated_desc_length": 68,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.971
   }
 ]
