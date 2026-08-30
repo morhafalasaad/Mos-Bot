@@ -1188,5 +1188,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.851
+  },
+  {
+    "timestamp": "2026-08-30T08:12:59Z",
+    "project_title": "تعديلات في موقع محاسبة إلكتروني php يدعم الفاتورة الالكترونية المرحلة الثانية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 303,
+    "output_tokens": 87,
+    "total_tokens": 390,
+    "original_desc_length": 305,
+    "truncated_desc_length": 305,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.801
   }
 ]
