@@ -172,6 +172,13 @@ class Project:
     # as tags (no extra request). None = no concern detected / unknown
     # (client is never blocked either way — see build_client_warning).
     client_warning: Optional[str] = None
+    # Raw signals behind client_warning (see parse_client_info) — kept
+    # separately so ai_agent.draft_proposal() can use them to adapt tone
+    # (e.g. write with a bit more confidence for an established,
+    # well-reviewed client) without re-deriving them from the warning
+    # string, and without exposing them to Telegram beyond the warning
+    # line notifier.py already builds. None = not fetched / unknown.
+    client_info: Optional[dict] = None
     # Client-requested delivery duration (e.g. "7 أيام"), best-effort
     # extracted from the detail page — see parse_project_duration. None if
     # not found/not stated.
@@ -630,6 +637,7 @@ def fetch_project_details(session, project: Project) -> None:
         html = fetch_page(session, project.url)
         project.tags = parse_project_tags(html)
         client_info = parse_client_info(html)
+        project.client_info = client_info or None
         project.client_warning = build_client_warning(client_info)
         project.duration = parse_project_duration(html)
         if not project.budget:
@@ -720,17 +728,48 @@ def _save_seen(seen: set):
         logger.error("Could not persist seen-projects file: %s", exc)
 
 
+def _category_urls() -> List[str]:
+    """
+    Returns the list of listing-page URLs to fetch this cycle. If
+    MOSTAQL_CATEGORIES is unset (default), returns just the single
+    unfiltered MOSTAQL_PROJECTS_URL — identical behavior to before this
+    setting existed. Otherwise returns one URL per configured category,
+    built from MOSTAQL_CATEGORY_URL_TEMPLATE (see its config.py comment
+    for the caveat that this template is a best-effort default, not a
+    verified-against-the-live-site guarantee).
+    """
+    categories = [c.strip() for c in config.MOSTAQL_CATEGORIES.split(",") if c.strip()]
+    if not categories:
+        return [config.MOSTAQL_PROJECTS_URL]
+    return [config.MOSTAQL_CATEGORY_URL_TEMPLATE.format(category=cat) for cat in categories]
+
+
 def get_new_projects() -> List[Project]:
     """
-    Main entry point for main.py. Fetches the listing, parses it, and returns
-    only projects not seen in previous cycles. Fully defensive: returns an
-    empty list rather than raising, so the worker loop never crashes here.
+    Main entry point for main.py. Fetches the listing (or, if
+    MOSTAQL_CATEGORIES is configured, one listing per category — see
+    _category_urls), parses it, and returns only projects not seen in
+    previous cycles. Fully defensive: returns an empty list rather than
+    raising, so the worker loop never crashes here.
     """
     session = _build_session()
     try:
-        html = fetch_page(session, config.MOSTAQL_PROJECTS_URL)
-        all_projects = parse_projects(html)
-        logger.debug("Total projects found on page this cycle: %s", len(all_projects))
+        urls = _category_urls()
+        all_projects: List[Project] = []
+        seen_ids_this_fetch = set()  # a project could plausibly appear under more than one category
+
+        for i, url in enumerate(urls):
+            if i > 0:
+                _polite_delay()  # same human-like spacing used elsewhere, applied BETWEEN category fetches too
+            html = fetch_page(session, url)
+            page_projects = parse_projects(html)
+            logger.debug("Category fetch %s/%s (%s): %s project(s) found", i + 1, len(urls), url, len(page_projects))
+            for p in page_projects:
+                if p.id not in seen_ids_this_fetch:
+                    seen_ids_this_fetch.add(p.id)
+                    all_projects.append(p)
+
+        logger.debug("Total projects found across %s page(s) this cycle: %s", len(urls), len(all_projects))
 
         seen = _load_seen()
 

@@ -181,6 +181,10 @@ python main.py
 
 ## Tuning
 
-- `MATCH_THRESHOLD` (default 75) — raise it to be more selective.
+- `MATCH_THRESHOLD` (default 60) — raise it to be more selective.
 - `POLL_INTERVAL_MIN` / `MAX` — how often to check Mostaql (seconds).
-- `MY_SKILLS` in `config.py` — edit the skill list Gemini scores against.
+- `MY_SKILLS` — comma-separated env var (see `.env.example`) that overrides
+  the built-in skill list entirely; include both English and Arabic terms,
+  since Mostaql tags/titles use both. Editing this on Render takes effect
+  on the next restart — no code change or redeploy needed. Leave unset to
+  use the default list built into `config.py`.

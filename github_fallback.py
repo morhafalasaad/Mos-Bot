@@ -302,6 +302,7 @@ def queue_project(project, reason: str, issue_number: Optional[int] = None) -> b
         "duration": getattr(project, "duration", None),
         "tags": getattr(project, "tags", None) or [],
         "client_warning": getattr(project, "client_warning", None),
+        "client_info": getattr(project, "client_info", None),
         "reason": reason,
         "issue_number": issue_number,
         "queued_at": datetime.now(timezone.utc).isoformat(),
