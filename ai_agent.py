@@ -62,14 +62,15 @@ main.py's CYCLE_TIMEOUT watchdog (ThreadPoolExecutor + future.result
 timeout), which is untouched by this file and must stay in place.
 """
 
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from google import genai
@@ -325,6 +326,15 @@ class Evaluation:
     suggested_price: Optional[str] = None
     delivery_days: Optional[int] = None
     proposal_ar: Optional[str] = None
+    # Fast-scan breakdown for human review in Telegram — which of the
+    # freelancer's OWN skills this project actually calls for, vs. which
+    # skills/technologies the project needs that aren't in the skill list
+    # at all (real gaps). Populated by score_project()/score_projects_batch
+    # via ProjectScoreSchema/_BatchScoreItem; stays empty (not an error)
+    # for locally-filtered or AI-failed evaluations, since neither ran a
+    # real scoring call.
+    matched_skills: List[str] = field(default_factory=list)
+    missing_skills: List[str] = field(default_factory=list)
     # True specifically when the Gemini call itself failed (e.g. every key
     # in GEMINI_API_KEYS hit 429/RESOURCE_EXHAUSTED, or another API error) —
     # as opposed to a successful call that simply scored the project low.
@@ -345,6 +355,14 @@ class Evaluation:
     response_time_sec: float = 0.0
     key_alias: Optional[str] = None
     proposal_generated: bool = False
+    # The threshold ACTUALLY used to decide whether to draft a proposal for
+    # this project — normally equal to config.MATCH_THRESHOLD, but may be
+    # higher if get_effective_match_threshold() ramped it up under quota
+    # pressure (see config.ADAPTIVE_THRESHOLD_ENABLED). Callers should
+    # compare match_score against THIS, not config.MATCH_THRESHOLD directly
+    # — otherwise a project whose proposal was skipped due to a raised
+    # effective threshold would be logged/reported against the wrong bar.
+    effective_threshold: float = 0.0
 
 
 def _extract_retry_delay_seconds(exc: Exception) -> Optional[float]:
@@ -575,7 +593,7 @@ def _generate(
                 )
 
                 try:
-                    return _call_gemini_once(key_index, model, prompt, gen_config)
+                    result = _call_gemini_once(key_index, model, prompt, gen_config)
                 except _KeyLocallyRateLimited:
                     logger.debug(
                         "Key #%s ran out of local rate-limit capacity for "
@@ -621,6 +639,12 @@ def _generate(
                     # error at all — not worth retrying or rotating for.
                     logger.error("Non-retryable Gemini error on model '%s': %s", model, exc, exc_info=True)
                     raise
+                else:
+                    # Only a genuinely successful call counts toward RPD —
+                    # see DailyRequestTracker's docstring for why failed
+                    # attempts are deliberately excluded.
+                    _daily_request_tracker.increment()
+                    return result
 
             if key_had_capacity:
                 logger.warning(
@@ -906,28 +930,60 @@ def _skill_tokens(skill: str) -> List[str]:
     return [t for t in tokens if len(t) >= 2]
 
 
-def local_skill_prefilter(tags: List[str]) -> bool:
+def local_skill_prefilter(tags: List[str], title: str = None, description: str = None) -> bool:
     """
     Returns True if the project should proceed to Gemini evaluation, False
     if it should be skipped locally with zero API cost.
 
-    Fail-open: an empty/missing tags list means "unknown, not confirmed
-    irrelevant" and always returns True. Only an explicit, non-empty tag
-    list with NO overlap against config.MY_SKILLS returns False.
+    Two independent checks, tried in order — either one finding an overlap
+    is enough to proceed to Gemini. Biased toward failing OPEN throughout,
+    since a false NEGATIVE here silently drops a lead with zero visibility
+    (nothing logs "this might have been a good match"), while a false
+    positive just costs one avoidable Gemini call:
+
+      1. Official tag overlap — if `tags` is non-empty, this is the
+         AUTHORITATIVE check: a non-empty tag list with zero overlap
+         against config.MY_SKILLS returns False immediately, exactly as
+         before this function had a second check. Mostaql's own tags are
+         a more reliable signal than free-text keyword matching when
+         they're actually available, so they're trusted on their own
+         without falling through to check #2 below.
+      2. Title/description keyword overlap — runs ONLY when tags are
+         unavailable (empty/missing — e.g. FETCH_PROJECT_TAGS=false, or
+         Mostaql simply didn't provide any for this project). Previously,
+         an untagged project unconditionally proceeded to Gemini
+         regardless of actual relevance — this applies the SAME substring
+         matching used for tags to the project's own title+description
+         text instead, so an untagged project with clearly zero skill-
+         keyword overlap anywhere in its own text can also be skipped at
+         zero API cost. Disable via config.TITLE_PREFILTER_ENABLED if this
+         proves too aggressive for your skill list's phrasing.
+
+    Fails open (returns True) if NEITHER tags NOR any usable title/
+    description text is available at all — nothing to check against.
     """
-    if not tags:
+    if tags:
+        tag_texts = [t.lower() for t in tags if t]
+        if tag_texts:
+            for skill in config.MY_SKILLS:
+                for token in _skill_tokens(skill):
+                    token_l = token.lower()
+                    for tag in tag_texts:
+                        if token_l in tag or tag in token_l:
+                            return True
+            return False  # tags existed and were checked — authoritative "no"
+
+    if not config.TITLE_PREFILTER_ENABLED:
         return True
 
-    tag_texts = [t.lower() for t in tags if t]
-    if not tag_texts:
-        return True
+    text = f"{title or ''} {description or ''}".strip().lower()
+    if not text:
+        return True  # nothing to check against — fail open
 
     for skill in config.MY_SKILLS:
         for token in _skill_tokens(skill):
-            token_l = token.lower()
-            for tag in tag_texts:
-                if token_l in tag or tag in token_l:
-                    return True
+            if token.lower() in text:
+                return True
 
     return False
 
@@ -950,6 +1006,222 @@ def smart_truncate_description(description: str, max_length: int = None) -> str:
     if not description or len(description) <= max_length:
         return description
     return description[:max_length].rstrip() + "... [description truncated for evaluation]"
+
+
+class ScoreCache:
+    """
+    Lightweight, fail-safe, on-disk cache mapping a hash of (title, the
+    FULL untruncated description, current MY_SKILLS) -> the score result
+    Gemini already produced for that exact content. A project re-evaluated
+    with byte-for-byte identical text — most commonly the GitHub-fallback
+    retry queue re-checking an entry whose earlier AI call failed, or a
+    Mostaql repost with unchanged text — hits this cache and skips a fresh
+    Gemini call entirely.
+
+    Only the SCORING result is cached (match_score/reasoning/
+    suggested_price/delivery_days) — NOT the proposal. See config.py's
+    SCORE_CACHE_ENABLED comment for why proposal drafting always runs
+    fresh regardless of cache hits.
+
+    Silent/fail-safe by construction, matching TokenUsageTracker: any file
+    read/write error degrades to "cache miss" rather than raising, since a
+    broken cache file must never interrupt evaluation. Uses the full,
+    untruncated description as part of the key (not whatever truncated
+    text a particular call happened to use) so the cache reflects the
+    project's real identity, independent of GEMINI_SCORING_DESCRIPTION_MAX_CHARS.
+    """
+
+    def __init__(self, path: str = None, max_entries: int = None):
+        self.path = path or config.SCORE_CACHE_FILE
+        self.max_entries = max_entries or config.SCORE_CACHE_MAX_ENTRIES
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(title: str, description: str) -> str:
+        # Skills fingerprint included so a MY_SKILLS change naturally
+        # invalidates every previously-cached score (different hash) —
+        # this can never silently serve a score computed against a skill
+        # list that no longer reflects config.py.
+        skills_fingerprint = ",".join(sorted(config.MY_SKILLS))
+        raw = f"{title or ''}\n{description or ''}\n{skills_fingerprint}"
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+    def get(self, title: str, description: str) -> Optional[dict]:
+        if not config.SCORE_CACHE_ENABLED:
+            return None
+        try:
+            key = self._key(title, description)
+            with self._lock:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+            if not isinstance(cache, dict):
+                return None
+            entry = cache.get(key)
+            return dict(entry) if entry else None
+        except Exception:
+            return None  # missing file, corrupt JSON, anything else -> cache miss
+
+    def set(self, title: str, description: str, score_data: dict) -> None:
+        if not config.SCORE_CACHE_ENABLED:
+            return
+        try:
+            key = self._key(title, description)
+            with self._lock:
+                try:
+                    with open(self.path, "r", encoding="utf-8") as f:
+                        cache = json.load(f)
+                    if not isinstance(cache, dict):
+                        cache = {}
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    cache = {}
+
+                # Only the fields evaluate_project()/evaluate_projects_batch()
+                # actually consume from a score result — never cache
+                # anything else that might sneak into score_data.
+                cache[key] = {
+                    "match_score": score_data.get("match_score"),
+                    "reasoning": score_data.get("reasoning"),
+                    "matched_skills": score_data.get("matched_skills"),
+                    "missing_skills": score_data.get("missing_skills"),
+                    "suggested_price": score_data.get("suggested_price"),
+                    "delivery_days": score_data.get("delivery_days"),
+                }
+
+                # Evict oldest entries (insertion order, guaranteed by dict
+                # since Python 3.7) once over the cap, so a long-running
+                # process can't grow this file unbounded.
+                if len(cache) > self.max_entries:
+                    overflow = len(cache) - self.max_entries
+                    for k in list(cache.keys())[:overflow]:
+                        del cache[k]
+
+                with open(self.path, "w", encoding="utf-8") as f:
+                    json.dump(cache, f, ensure_ascii=False)
+        except Exception:
+            pass  # silent/fail-safe, matching TokenUsageTracker
+
+
+_score_cache = ScoreCache()
+
+
+class DailyRequestTracker:
+    """
+    Tracks how many ACTUAL Gemini API requests succeeded today (UTC
+    calendar day), across all keys/models combined. A batch scoring call
+    counts as ONE request regardless of how many projects it scored —
+    this is deliberately request-count-based (matching how Gemini's RPD
+    quota itself works), not project-count-based.
+
+    This is the source of truth for get_effective_match_threshold() below
+    — NOT TokenUsageTracker, which logs one row per fully-processed
+    PROJECT (0 calls on a cache hit, 1 for scoring only, up to 2 including
+    a proposal), making it unsuitable for counting raw requests.
+
+    Only counts calls that actually SUCCEEDED. Failed attempts (429s,
+    transient errors) are deliberately not counted here — they're already
+    handled by KeyRateLimiter (proactive) and the key/model fallback chain
+    (reactive) separately, so this tracker stays focused on one question:
+    "how much real scoring/drafting work got done today," which is what
+    adaptive thresholding actually wants to protect.
+
+    Persisted to a small on-disk file, keyed by UTC date, so a Render
+    restart mid-day doesn't reset the count to zero. Silent/fail-safe like
+    every other tracker in this file: any I/O error just behaves as if
+    zero requests have been made today, rather than raising.
+    """
+
+    def __init__(self, path: str = None):
+        self.path = path or config.DAILY_REQUEST_COUNT_FILE
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _load(self) -> dict:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def increment(self) -> None:
+        try:
+            with self._lock:
+                data = self._load()
+                today = self._today()
+                if data.get("date") != today:
+                    data = {"date": today, "count": 0}
+                data["count"] = int(data.get("count", 0)) + 1
+                with open(self.path, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+        except Exception:
+            pass
+
+    def get_today_count(self) -> int:
+        try:
+            data = self._load()
+            if data.get("date") != self._today():
+                return 0  # a new UTC day has started since the last write
+            return int(data.get("count", 0))
+        except Exception:
+            return 0
+
+
+_daily_request_tracker = DailyRequestTracker()
+
+
+def get_effective_match_threshold() -> float:
+    """
+    Returns the match-score threshold to actually use for THIS moment,
+    which may be higher than config.MATCH_THRESHOLD if today's real
+    Gemini request count (see DailyRequestTracker) has crossed
+    config.ADAPTIVE_THRESHOLD_TRIGGER_RATIO of the estimated daily quota.
+
+    Rationale: without this, the bot evaluates every new project at the
+    same fixed bar all day, and once the daily quota is actually
+    exhausted, EVERY project from that point on falls back to GitHub
+    regardless of how good a match it might have been — the quota gets
+    spent on a first-come-first-served basis rather than a
+    best-candidates basis. Ramping the threshold up as the quota gets
+    tight spends the LAST portion of the day's budget more selectively,
+    on stronger matches only, instead of running out partway through an
+    average project.
+
+    Below the trigger ratio: returns config.MATCH_THRESHOLD unchanged (no
+    behavior change at all under normal, non-quota-pressured conditions).
+    Above it: ramps LINEARLY from MATCH_THRESHOLD up to
+    config.ADAPTIVE_THRESHOLD_HARD_CAP as usage climbs from the trigger
+    ratio to 100%+ of the estimated quota — the hard cap exists so the
+    threshold can never climb so high that literally nothing could ever
+    match, even once the quota is fully or over spent.
+
+    Returns config.MATCH_THRESHOLD unchanged (no-op) if
+    config.ADAPTIVE_THRESHOLD_ENABLED is False, or if the estimated quota
+    is configured as 0/negative (nothing sensible to ramp against).
+    """
+    base = config.MATCH_THRESHOLD
+    if not config.ADAPTIVE_THRESHOLD_ENABLED or config.GEMINI_ESTIMATED_DAILY_QUOTA <= 0:
+        return base
+
+    hard_cap = max(config.ADAPTIVE_THRESHOLD_HARD_CAP, base)  # never ramp below the configured base
+    trigger = min(max(config.ADAPTIVE_THRESHOLD_TRIGGER_RATIO, 0.0), 0.999)  # avoid a zero-width ramp window
+
+    usage_ratio = _daily_request_tracker.get_today_count() / config.GEMINI_ESTIMATED_DAILY_QUOTA
+    if usage_ratio <= trigger:
+        return base
+
+    progress = min((usage_ratio - trigger) / (1.0 - trigger), 1.0)
+    effective = round(min(base + progress * (hard_cap - base), hard_cap), 1)
+    if effective > base:
+        logger.info(
+            "Adaptive threshold active: today's request count is at %.0f%% of the "
+            "estimated daily quota (%s/%s) — effective threshold raised from %.0f%% to %.0f%%",
+            usage_ratio * 100, _daily_request_tracker.get_today_count(),
+            config.GEMINI_ESTIMATED_DAILY_QUOTA, base, effective,
+        )
+    return effective
 
 
 class TokenUsageTracker:
@@ -1093,6 +1365,18 @@ class ProjectScoreSchema(BaseModel):
     reasoning: str = Field(
         description="One short sentence in English explaining the score.",
     )
+    matched_skills: List[str] = Field(
+        default_factory=list,
+        description="Short list (0-5 items) of skills FROM THE FREELANCER'S OWN LIST above that this specific "
+                     "project genuinely calls for — exact names as given in the skill list, not paraphrased. "
+                     "Empty list if none apply.",
+    )
+    missing_skills: List[str] = Field(
+        default_factory=list,
+        description="Short list (0-5 items) of skills/technologies the PROJECT clearly requires that are NOT "
+                     "in the freelancer's skill list above — i.e. real gaps. Empty list if the freelancer's "
+                     "skills fully cover what the project needs.",
+    )
     suggested_price: str = Field(
         description="A realistic recommended bid price/budget for this project's scope, as a short string "
                      "including currency, e.g. '$150' or '$300-400'.",
@@ -1134,8 +1418,11 @@ Freelancer skills: {skills_list}
 Project title: {title}
 Project description: {description}
 
-Evaluate the match and provide a match score, brief reasoning, a suggested
-bid price, and an estimated delivery time in days.
+Evaluate the match and provide a match score, brief reasoning, which of the
+freelancer's OWN listed skills genuinely apply to this project, which
+skills/technologies the project needs that are NOT in the freelancer's
+list (if any), a suggested bid price, and an estimated delivery time in
+days.
 """
     start = time.time()
     try:
@@ -1182,15 +1469,172 @@ bid price, and an estimated delivery time in days.
         return None, stats
 
 
+class _BatchScoreItem(BaseModel):
+    index: int = Field(
+        description="The 0-based index of this project exactly as given in the input list — "
+                    "used to map each result back to its project even if the model's array "
+                    "order doesn't exactly match the input order.",
+    )
+    match_score: int = Field(
+        ge=0, le=100,
+        description="Integer score from 0 to 100 for how well the freelancer's skills match this project.",
+    )
+    reasoning: str = Field(
+        description="One short sentence in English explaining the score.",
+    )
+    matched_skills: List[str] = Field(
+        default_factory=list,
+        description="Short list (0-5 items) of skills FROM THE FREELANCER'S OWN LIST that this specific "
+                     "project genuinely calls for — exact names as given in the skill list, not paraphrased. "
+                     "Empty list if none apply.",
+    )
+    missing_skills: List[str] = Field(
+        default_factory=list,
+        description="Short list (0-5 items) of skills/technologies THIS project clearly requires that are NOT "
+                     "in the freelancer's skill list — i.e. real gaps. Empty list if fully covered.",
+    )
+    suggested_price: str = Field(
+        description="A realistic recommended bid price/budget for this project's scope, as a short string "
+                     "including currency, e.g. '$150' or '$300-400'.",
+    )
+    delivery_days: int = Field(
+        ge=1,
+        description="Realistic estimated number of days to complete the project based on its scope.",
+    )
+
+
+class BatchScoreSchema(BaseModel):
+    """response_schema for score_projects_batch() — one ProjectScoreSchema-
+    shaped entry per input project, tagged with `index` so results can be
+    matched back to their project regardless of array order."""
+    results: List[_BatchScoreItem] = Field(
+        description="Exactly one result per input project, each tagged with its `index`.",
+    )
+
+
+def score_projects_batch(projects: List[dict]) -> tuple:
+    """
+    Batched counterpart to score_project(): scores MULTIPLE projects in a
+    SINGLE Gemini call instead of one call per project — the single
+    biggest lever for staying inside a free-tier daily request quota (RPD)
+    when several new projects appear in the same poll cycle. `projects` is
+    a list of {"title": str, "description": str} dicts (already truncated
+    by the caller), in a fixed order that the caller cares about.
+
+    Returns (results_by_index, call_stats):
+      - results_by_index: {index: {"match_score", "reasoning",
+        "suggested_price", "delivery_days"}}, one entry per project Gemini
+        actually returned a result for. An index MISSING from this dict
+        means Gemini dropped that entry — rare, but structured output
+        doesn't guarantee every array item survives generation (e.g. the
+        response hitting max_output_tokens mid-array). The caller MUST
+        treat a missing index the same as a scoring failure for that one
+        project specifically, not silently skip it.
+      - call_stats: aggregate token/timing stats for the WHOLE call —
+        Gemini doesn't report a per-item breakdown within one batched
+        response, so callers apportion this across the batch themselves
+        for analytics (see evaluate_projects_batch).
+
+    Returns (None, call_stats) if the call itself fails outright (network
+    error, every key exhausted, etc.) — same convention as score_project().
+    """
+    if not projects:
+        return {}, dict(_EMPTY_CALL_STATS)
+
+    skills_list = ", ".join(config.MY_SKILLS)
+    numbered_projects = "\n\n".join(
+        f"[Project index={i}]\nTitle: {p['title']}\nDescription: {p['description']}"
+        for i, p in enumerate(projects)
+    )
+    prompt = f"""
+You are an expert freelance-bidding assistant. Below are {len(projects)}
+separate freelance projects, each labeled with its own index. Evaluate
+EACH ONE independently against the freelancer's skill set below — do not
+let one project's content influence another's score.
+
+Freelancer skills: {skills_list}
+
+{numbered_projects}
+
+For EVERY project index above, provide a match score, brief reasoning,
+which of the freelancer's OWN listed skills genuinely apply to it, which
+skills/technologies it needs that are NOT in the freelancer's list (if
+any), a suggested bid price, and an estimated delivery time in days.
+Return exactly {len(projects)} results — one per index, none skipped or repeated.
+"""
+    start = time.time()
+    try:
+        # Scale the output budget with batch size: each result needs
+        # roughly the same tokens as a single score_project() call, plus a
+        # small buffer for JSON array overhead. Capped defensively so an
+        # unexpectedly large batch can't request an unreasonable budget.
+        max_tokens = min(config.GEMINI_SCORING_MAX_OUTPUT_TOKENS * len(projects) + 200, 8192)
+        response = _generate(
+            prompt,
+            response_schema=BatchScoreSchema,
+            temperature=config.GEMINI_SCORING_TEMPERATURE,
+            max_output_tokens=max_tokens,
+        )
+        stats = _extract_call_stats(response, time.time() - start)
+
+        data = None
+        try:
+            parsed = response.parsed
+            if parsed is not None:
+                data = parsed.model_dump()
+        except Exception as parsed_exc:
+            logger.warning("Batch response.parsed access failed, falling back to text parsing: %s", parsed_exc)
+
+        if data is None:
+            try:
+                data = parse_gemini_json(response.text)
+            except ValueError as parse_exc:
+                logger.error("%s", parse_exc)
+                return None, stats
+
+        raw_results = data.get("results") or []
+        results_by_index: Dict[int, dict] = {}
+        for item in raw_results:
+            try:
+                idx = int(item["index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            results_by_index[idx] = item
+
+        if len(results_by_index) < len(projects):
+            missing = [i for i in range(len(projects)) if i not in results_by_index]
+            logger.warning(
+                "Batch scoring returned %s/%s result(s) — missing index(es) %s "
+                "will be treated as scoring failures for those specific projects",
+                len(results_by_index), len(projects), missing,
+            )
+
+        return results_by_index, stats
+    except Exception as exc:
+        logger.error("Gemini BATCH scoring call failed: %s", exc, exc_info=True)
+        stats = dict(_EMPTY_CALL_STATS, response_time_sec=time.time() - start, key_alias=_current_key_alias())
+        return None, stats
+
+
 def draft_proposal(
     title: str,
     description: str,
     budget: Optional[str] = None,
+    client_info: Optional[dict] = None,
 ) -> tuple:
     """
     Step 2 (only called if score >= threshold): draft an Arabic proposal
     following Mostaql's professional-proposal standards. Returns
     (text_or_None, call_stats) — see score_project's docstring for why.
+
+    client_info (see scraper.parse_client_info) is OPTIONAL context used
+    only to adjust TONE — e.g. a slightly more assured, relationship-
+    minded closing for an established, well-reviewed client vs. a warmer,
+    more reassuring one for a brand-new client with no history yet. It is
+    NEVER used to change what work is promised, and the prompt explicitly
+    forbids stating or implying anything about the client's rating/review
+    count/history in the proposal text itself (that would read as odd or
+    presumptuous to the client) — it only shapes the freelancer's own tone.
 
     IMPORTANT — price/delivery time are DELIBERATELY NOT passed to this
     prompt and DELIBERATELY NOT mentioned anywhere in the proposal text.
@@ -1205,13 +1649,34 @@ def draft_proposal(
     skills_list = ", ".join(config.MY_SKILLS)
     budget_line = f"\n(للسياق فقط، لا تذكره: ميزانية العميل المعلنة هي {budget})" if budget else ""
 
+    # Tone guidance derived from client_info — advisory only, never a claim
+    # about the client that ends up IN the proposal text (see the explicit
+    # rule below forbidding that). Fails open to no guidance at all if
+    # client_info is missing/empty/inconclusive, which is the common case.
+    tone_line = ""
+    if client_info:
+        rating = client_info.get("rating")
+        reviews_count = client_info.get("reviews_count")
+        if client_info.get("is_new"):
+            tone_line = (
+                "\n(ملاحظة أسلوب داخلية فقط، لا تُدرَج في النص: هذا عميل جديد على "
+                "المنصة أو بدون سجل تقييمات — اكتب بأسلوب مرحّب وواضح يبني الثقة "
+                "من الصفر، دون أي إشارة إلى كونه عميلاً جديداً.)"
+            )
+        elif rating is not None and rating >= config.STRONG_CLIENT_RATING_THRESHOLD and (reviews_count or 0) >= 3:
+            tone_line = (
+                "\n(ملاحظة أسلوب داخلية فقط، لا تُدرَج في النص: هذا عميل موثوق وله "
+                "سجل تعاملات جيد — يمكنك الكتابة بنبرة أكثر ثقة ومهنية مباشرة، "
+                "دون أي إشارة إلى تقييمه أو سجله.)"
+            )
+
     prompt = f"""
 أنت مستقل خبير تكتب عرضك الشخصي لتقديمه على مشروع في منصة مستقل (Mostaql).
 مهاراتك الفعلية (استخدم منها فقط ما يخدم هذا المشروع تحديداً، وتجاهل الباقي
 تماماً): {skills_list}
 
 عنوان المشروع: {title}
-وصف المشروع: {description}{budget_line}
+وصف المشروع: {description}{budget_line}{tone_line}
 
 اكتب عرضاً شخصياً بصوت مستقل بشري حقيقي وخبير، باللغة العربية الفصحى،
 يغطي هذه العناصر بشكل متدفق وطبيعي (بدون كتابة عناوين الأقسام، وبدون أن
@@ -1243,6 +1708,10 @@ def draft_proposal(
 5. طوله لا يتجاوز 180 كلمة.
 6. لا تضع أي عناوين أقسام أو تنسيق ماركداون، فقط نص العرض جاهزاً للنسخ
    مباشرة.
+7. ممنوع الإشارة من قريب أو بعيد إلى تقييم العميل أو عدد تقييماته أو كونه
+   عميلاً جديداً أو له سجل أعمال سابق أم لا — أي ملاحظة أسلوب داخلية وردت
+   أعلاه هي لضبط نبرتك أنت فقط، ولا يجوز أن تظهر كإشارة أو تلميح في نص
+   العرض نفسه.
 """
     start = time.time()
     try:
@@ -1261,74 +1730,44 @@ def draft_proposal(
         return None, stats
 
 
-def evaluate_project(
+def _ai_failed_evaluation(reason: str, original_desc_length: int, truncated_desc_length: int, score_stats: dict) -> Evaluation:
+    """Shared 'scoring didn't produce a usable result' Evaluation, used by
+    both evaluate_project() and evaluate_projects_batch() so this shape
+    exists in exactly one place."""
+    return Evaluation(
+        match_score=0.0,
+        reasoning=reason,
+        ai_failed=True,
+        original_desc_length=original_desc_length,
+        truncated_desc_length=truncated_desc_length,
+        prompt_tokens=score_stats["prompt_tokens"],
+        output_tokens=score_stats["output_tokens"],
+        total_tokens=score_stats["total_tokens"],
+        response_time_sec=round(score_stats["response_time_sec"], 3),
+        key_alias=score_stats["key_alias"],
+    )
+
+
+def _finalize_score_result(
     title: str,
-    description: str,
-    budget: Optional[str] = None,
-    tags: Optional[List[str]] = None,
+    full_description: str,
+    budget: Optional[str],
+    score_data: dict,
+    score_stats: dict,
+    original_desc_length: int,
+    truncated_desc_length: int,
+    client_info: Optional[dict] = None,
 ) -> Evaluation:
     """
-    Full pipeline for one project:
-      0. Local tag pre-filter — zero-cost skip if tags exist and don't
-         overlap with config.MY_SKILLS at all.
-      1. Score it via Gemini (including price/duration estimates).
-      2. If it clears the threshold, draft a proposal too.
-    Always returns an Evaluation object — never raises — so main.py's loop
-    can rely on it unconditionally. Also populates the analytics fields
-    (token counts, response time, desc lengths, etc.) that main.py passes
-    to ai_agent.record_token_usage() once it also knows sent_to_telegram.
+    Shared tail logic that turns a raw score_data dict — regardless of
+    whether it came from a fresh score_project()/score_projects_batch()
+    call or a ScoreCache hit — into a complete Evaluation: validates
+    match_score, and if it clears MATCH_THRESHOLD, drafts a proposal
+    (always fresh, never cached — see ScoreCache's docstring) using the
+    FULL description at its own, longer truncation length. Used by both
+    evaluate_project() and evaluate_projects_batch() so this logic exists
+    in exactly one place.
     """
-    original_desc_length = len(description) if description else 0
-    # Truncate ONCE, here, so both score_project() and draft_proposal()
-    # downstream see the identical (already-shortened) description — title
-    # and tags are untouched, only this local variable is reassigned.
-    description = smart_truncate_description(description)
-    truncated_desc_length = len(description) if description else 0
-
-    if tags and not local_skill_prefilter(tags):
-        logger.info(
-            "Local pre-filter: no overlap between project tags %s and "
-            "MY_SKILLS — skipping Gemini entirely (zero API cost)",
-            tags,
-        )
-        return Evaluation(
-            match_score=0.0,
-            reasoning="No matching skill tags (filtered locally, zero API cost).",
-            original_desc_length=original_desc_length,
-            truncated_desc_length=truncated_desc_length,
-        )
-
-    score_data, score_stats = score_project(title, description)
-    if score_data is None:
-        return Evaluation(
-            match_score=0.0,
-            reasoning="AI scoring unavailable (error).",
-            ai_failed=True,
-            original_desc_length=original_desc_length,
-            truncated_desc_length=truncated_desc_length,
-            prompt_tokens=score_stats["prompt_tokens"],
-            output_tokens=score_stats["output_tokens"],
-            total_tokens=score_stats["total_tokens"],
-            response_time_sec=round(score_stats["response_time_sec"], 3),
-            key_alias=score_stats["key_alias"],
-        )
-
-    # Round to a whole number ONCE, immediately, before any comparison or
-    # logging happens anywhere downstream (here, and in main.py). This is
-    # what guarantees the score used in the threshold check, the one shown
-    # in logs, and the one sent to Telegram are always the exact same
-    # number — e.g. a raw 59.6 becomes 60 here and stays 60 everywhere,
-    # instead of comparing 59.6 against the threshold while a log
-    # elsewhere displays a separately-rounded "60%" that looks like it
-    # should have passed.
-    #
-    # Defensive: match_score coming back as something float() can't handle
-    # (a stray "%" sign, a word, an unexpected type) used to be an
-    # UNCAUGHT crash here — score_project()/parse_gemini_json() only
-    # guarantee valid JSON *structure*, not that individual field values
-    # are the expected type. Treated the same as "AI scoring unavailable"
-    # (ai_failed=True) rather than raising or silently reporting a
-    # misleading 0.0% as if it were a real evaluated score.
     try:
         raw_score = float(score_data.get("match_score", 0))
     except (TypeError, ValueError):
@@ -1338,21 +1777,32 @@ def evaluate_project(
             "silently reporting 0%%",
             score_data.get("match_score"), title,
         )
-        return Evaluation(
-            match_score=0.0,
-            reasoning="AI scoring unavailable (malformed match_score in response).",
-            ai_failed=True,
-            original_desc_length=original_desc_length,
-            truncated_desc_length=truncated_desc_length,
-            prompt_tokens=score_stats["prompt_tokens"],
-            output_tokens=score_stats["output_tokens"],
-            total_tokens=score_stats["total_tokens"],
-            response_time_sec=round(score_stats["response_time_sec"], 3),
-            key_alias=score_stats["key_alias"],
+        return _ai_failed_evaluation(
+            "AI scoring unavailable (malformed match_score in response).",
+            original_desc_length, truncated_desc_length, score_stats,
         )
+    # Round to a whole number ONCE, immediately, before any comparison or
+    # logging happens anywhere downstream (here, and in main.py) — see the
+    # detailed rationale that used to live inline here: this guarantees
+    # the score used in the threshold check, the one shown in logs, and
+    # the one sent to Telegram are always the exact same number.
     score = float(round(raw_score))
 
     reasoning = score_data.get("reasoning", "")
+
+    def _safe_skill_list(raw) -> List[str]:
+        # Defensive: Gemini's structured output enforces the schema at the
+        # top level, but a ScoreCache hit replays a plain dict we wrote
+        # ourselves — still worth guarding against anything other than a
+        # list of strings ending up here rather than crashing downstream
+        # Telegram formatting.
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if item and str(item).strip()]
+
+    matched_skills = _safe_skill_list(score_data.get("matched_skills"))
+    missing_skills = _safe_skill_list(score_data.get("missing_skills"))
+
     suggested_price = score_data.get("suggested_price")
     # Defensive: Gemini occasionally returns this as a number instead of
     # the requested string (e.g. 150 instead of "$150") — coerce so
@@ -1369,21 +1819,35 @@ def evaluate_project(
     proposal = None
     proposal_generated = False
     proposal_stats = dict(_EMPTY_CALL_STATS)
+    # Computed ONCE here and reused for both the decision below and the
+    # returned Evaluation, so a threshold that ramps up mid-batch under
+    # quota pressure can't produce an inconsistent picture for one project
+    # (e.g. deciding with one value but reporting against another).
+    threshold = get_effective_match_threshold()
     # >= : a score exactly equal to the threshold must be treated as a match,
     # not skipped. This must match main.py's notification-gate comparison
-    # exactly, since proposal_ar only gets set here — if this gate were
-    # stricter than main.py's, a boundary-score project would clear the
-    # notification check but still have no proposal to send.
-    if score >= config.MATCH_THRESHOLD:
+    # exactly (main.py now compares against evaluation.effective_threshold,
+    # not the static config.MATCH_THRESHOLD, for exactly this reason) —
+    # since proposal_ar only gets set here, if that gate used a different
+    # bar than this one, a boundary-score project could clear main.py's
+    # check but still have no proposal to send, or vice versa.
+    if score >= threshold:
         proposal_generated = True  # a drafting call was executed, regardless of its outcome below
+        # Proposal drafting uses its OWN (longer) truncation of the FULL
+        # description — deliberately re-truncated here rather than reusing
+        # whatever shorter text scoring used, since a cache hit means no
+        # scoring-truncated text was even computed this time around.
+        proposal_desc = smart_truncate_description(full_description, max_length=config.GEMINI_DESCRIPTION_MAX_CHARS)
         # Deliberately NOT passing suggested_price/delivery_days here — see
         # draft_proposal()'s docstring. They still flow to Telegram via the
         # Evaluation object below, just never into the proposal text itself.
-        proposal, proposal_stats = draft_proposal(title, description, budget)
+        proposal, proposal_stats = draft_proposal(title, proposal_desc, budget, client_info)
 
     return Evaluation(
         match_score=score,
         reasoning=reasoning,
+        matched_skills=matched_skills,
+        missing_skills=missing_skills,
         suggested_price=suggested_price,
         delivery_days=delivery_days,
         proposal_ar=proposal,
@@ -1395,6 +1859,201 @@ def evaluate_project(
         response_time_sec=round(score_stats["response_time_sec"] + proposal_stats["response_time_sec"], 3),
         # Whichever key was actually used LAST (proposal call if it ran,
         # otherwise the scoring call) — both usually the same key anyway.
+        # A cache hit leaves score_stats["key_alias"] as None, so this
+        # naturally falls back to the proposal call's key, or None if
+        # neither call actually ran (below-threshold cache hit).
         key_alias=proposal_stats["key_alias"] or score_stats["key_alias"],
         proposal_generated=proposal_generated,
+        effective_threshold=threshold,
     )
+
+
+def evaluate_project(
+    title: str,
+    description: str,
+    budget: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    client_info: Optional[dict] = None,
+) -> Evaluation:
+    """
+    Full pipeline for one project:
+      0. Local tag pre-filter — zero-cost skip if tags exist and don't
+         overlap with config.MY_SKILLS at all.
+      1. Score-cache lookup — zero-cost skip of the Gemini scoring call if
+         this exact (title, description, MY_SKILLS) was already scored
+         before (see ScoreCache).
+      2. Score it via Gemini if not cached (including price/duration
+         estimates), using the SHORTER scoring-specific truncation.
+      3. If it clears the threshold, draft a proposal too, using the full
+         (longer-truncated) description — client_info (see
+         scraper.parse_client_info), if provided, lets draft_proposal()
+         adjust TONE ONLY (see its docstring); it never changes scoring.
+    Always returns an Evaluation object — never raises — so main.py's loop
+    can rely on it unconditionally. Also populates the analytics fields
+    (token counts, response time, desc lengths, etc.) that main.py passes
+    to ai_agent.record_token_usage() once it also knows sent_to_telegram.
+    """
+    original_desc_length = len(description) if description else 0
+
+    if not local_skill_prefilter(tags, title, description):
+        logger.info(
+            "Local pre-filter: no skill overlap found (tags=%s) — "
+            "skipping Gemini entirely (zero API cost)",
+            tags,
+        )
+        return Evaluation(
+            match_score=0.0,
+            reasoning="No matching skills found locally (filtered, zero API cost).",
+            original_desc_length=original_desc_length,
+            truncated_desc_length=0,
+        )
+
+    # Scoring uses a SHORTER truncation than proposal drafting — see
+    # config.GEMINI_SCORING_DESCRIPTION_MAX_CHARS's comment. The cache
+    # lookup below uses the FULL, untruncated `description` as its key —
+    # a project's identity shouldn't depend on this truncation length.
+    scoring_desc = smart_truncate_description(description, max_length=config.GEMINI_SCORING_DESCRIPTION_MAX_CHARS)
+    truncated_desc_length = len(scoring_desc) if scoring_desc else 0
+
+    cached = _score_cache.get(title, description)
+    if cached is not None:
+        logger.info(
+            "Score cache HIT for '%s' — identical content already scored, "
+            "skipping the Gemini scoring call entirely",
+            title,
+        )
+        score_data, score_stats = cached, dict(_EMPTY_CALL_STATS)
+    else:
+        score_data, score_stats = score_project(title, scoring_desc)
+        if score_data is not None:
+            _score_cache.set(title, description, score_data)
+
+    if score_data is None:
+        return _ai_failed_evaluation(
+            "AI scoring unavailable (error).", original_desc_length, truncated_desc_length, score_stats,
+        )
+
+    return _finalize_score_result(
+        title, description, budget, score_data, score_stats, original_desc_length, truncated_desc_length,
+        client_info=client_info,
+    )
+
+
+def evaluate_projects_batch(projects: List[dict]) -> List[Evaluation]:
+    """
+    Batched counterpart to evaluate_project(): scores ALL given projects in
+    ONE Gemini call (via score_projects_batch), then drafts a proposal
+    individually — still one call each — for whichever ones clear
+    MATCH_THRESHOLD. Proposal drafting is deliberately NOT batched: free-
+    form prose for several unrelated projects in a single call risks
+    quality bleed between them (tone/details from one leaking into
+    another's proposal), so it stays one call per accepted match. Since
+    match_score >= MATCH_THRESHOLD is usually the minority of any batch,
+    this still collapses what used to be N scoring calls into 1.
+
+    `projects` is a list of dicts shaped like {"title", "description",
+    "budget", "tags"}. Returns a list of Evaluation objects in the EXACT
+    same order/length as the input, so callers can zip() it against their
+    own project objects.
+
+    Two zero-Gemini-cost skips happen before anything is sent to Gemini,
+    per project:
+      1. Local tag pre-filter (identical rule to evaluate_project()).
+      2. Score-cache lookup (see ScoreCache) — a project whose exact
+         (title, description, MY_SKILLS) was already scored before skips
+         the batch entirely for that project.
+    Only the remaining projects are sent to Gemini in ONE scoring call,
+    using the shorter scoring-specific truncation (see config.py).
+    """
+    n = len(projects)
+    results: List[Optional[Evaluation]] = [None] * n
+    original_lengths = [len(p.get("description") or "") for p in projects]
+    # Scoring uses the SHORTER truncation — see config.GEMINI_SCORING_DESCRIPTION_MAX_CHARS.
+    scoring_descs = [
+        smart_truncate_description(p.get("description") or "", max_length=config.GEMINI_SCORING_DESCRIPTION_MAX_CHARS)
+        for p in projects
+    ]
+
+    # batch_positions[i] = this project's position within `to_score` (the
+    # subset actually sent to Gemini), or None if it was already resolved
+    # below (local pre-filter or cache hit) without ever needing an API call.
+    to_score: List[dict] = []
+    batch_positions: List[Optional[int]] = [None] * n
+
+    for i, p in enumerate(projects):
+        tags = p.get("tags") or []
+        if not local_skill_prefilter(tags, p.get("title"), p.get("description")):
+            logger.info(
+                "Local pre-filter: no skill overlap found (tags=%s) for '%s' — "
+                "skipping Gemini entirely (zero API cost)",
+                tags, p.get("title"),
+            )
+            results[i] = Evaluation(
+                match_score=0.0,
+                reasoning="No matching skills found locally (filtered, zero API cost).",
+                original_desc_length=original_lengths[i],
+                truncated_desc_length=0,
+            )
+            continue
+
+        # Cache lookup uses the FULL, untruncated description — a
+        # project's identity shouldn't depend on this batch's truncation.
+        cached = _score_cache.get(p["title"], p.get("description") or "")
+        if cached is not None:
+            logger.info(
+                "Score cache HIT for '%s' — identical content already "
+                "scored, skipping this project's slot in the batch call entirely",
+                p["title"],
+            )
+            results[i] = _finalize_score_result(
+                p["title"], p.get("description") or "", p.get("budget"),
+                cached, dict(_EMPTY_CALL_STATS),
+                original_lengths[i], len(scoring_descs[i] or ""),
+                client_info=p.get("client_info"),
+            )
+            continue
+
+        batch_positions[i] = len(to_score)
+        to_score.append({"title": p["title"], "description": scoring_descs[i]})
+
+    if to_score:
+        score_results, batch_stats = score_projects_batch(to_score)
+
+        # Apportion the ONE batch call's aggregate stats evenly across the
+        # projects actually sent to Gemini — Gemini doesn't report a
+        # per-item token breakdown within a single batched response, so
+        # this is a reasonable approximation for analytics, not exact
+        # per-project accounting. key_alias isn't numeric, so it's shared
+        # as-is rather than divided.
+        share = max(len(to_score), 1)
+        per_item_stats = dict(batch_stats or _EMPTY_CALL_STATS)
+        per_item_stats["prompt_tokens"] = (per_item_stats.get("prompt_tokens") or 0) // share
+        per_item_stats["output_tokens"] = (per_item_stats.get("output_tokens") or 0) // share
+        per_item_stats["total_tokens"] = (per_item_stats.get("total_tokens") or 0) // share
+        per_item_stats["response_time_sec"] = (per_item_stats.get("response_time_sec") or 0.0) / share
+
+        for i in range(n):
+            pos = batch_positions[i]
+            if pos is None:
+                continue  # already filled in above (pre-filter or cache hit)
+
+            score_data = None if score_results is None else score_results.get(pos)
+            if score_data is None:
+                results[i] = _ai_failed_evaluation(
+                    "AI scoring unavailable (error).",
+                    original_lengths[i], len(scoring_descs[i] or ""), per_item_stats,
+                )
+                continue
+
+            # Cache this fresh result under the FULL, untruncated
+            # description — so a future retry of this exact project (e.g.
+            # via the GitHub fallback queue) can skip Gemini entirely.
+            _score_cache.set(projects[i]["title"], projects[i].get("description") or "", score_data)
+
+            results[i] = _finalize_score_result(
+                projects[i]["title"], projects[i].get("description") or "", projects[i].get("budget"),
+                score_data, per_item_stats, original_lengths[i], len(scoring_descs[i] or ""),
+                client_info=projects[i].get("client_info"),
+            )
+
+    return results

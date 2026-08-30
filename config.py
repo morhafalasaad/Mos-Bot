@@ -91,6 +91,20 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 # Leave unset if Gemini already works from your location.
 GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "").strip() or None
 
+
+# ---- Batch scoring (reduces Gemini calls per cycle) ------------------------
+# Multiple newly-scraped projects are scored together in ONE Gemini call
+# instead of one call per project — the single biggest lever for staying
+# inside a free-tier daily request quota (RPD) when several new projects
+# appear in the same poll cycle. Proposal drafting is NOT batched (see
+# ai_agent.evaluate_projects_batch's docstring) — it stays one call per
+# accepted match, which is normally the minority of any given batch.
+GEMINI_SCORE_BATCH_SIZE = int(os.getenv("GEMINI_SCORE_BATCH_SIZE", "5"))
+# How long (seconds) the consumer waits to accumulate a batch before
+# scoring whatever it's collected so far — prevents a slow trickle of
+# projects from waiting indefinitely for a full batch to form.
+GEMINI_BATCH_MAX_WAIT_SECONDS = int(os.getenv("GEMINI_BATCH_MAX_WAIT_SECONDS", "15"))
+
 # ---- Token-usage optimization ---------------------------------------------------
 # Applied ONLY to the scoring call (ai_agent.score_project) — its output is
 # a small fixed-shape JSON object, so a low temperature and a tight output
@@ -98,11 +112,40 @@ GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "").strip() or None
 # natural, varied prose (per the "human, non-robotic tone" requirement), and
 # a temperature this low would make every proposal read identically.
 GEMINI_SCORING_TEMPERATURE = float(os.getenv("GEMINI_SCORING_TEMPERATURE", "0.1"))
-GEMINI_SCORING_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_SCORING_MAX_OUTPUT_TOKENS", "300"))
+# Bumped from 300 -> 380 to accommodate the matched_skills/missing_skills
+# list fields (see ai_agent.ProjectScoreSchema) on top of the original
+# fixed-shape fields.
+GEMINI_SCORING_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_SCORING_MAX_OUTPUT_TOKENS", "380"))
 # Project descriptions longer than this are truncated before being placed
-# into ANY prompt (both scoring and proposal drafting) — see
-# ai_agent.smart_truncate_description. Title and tags are never touched.
+# into the PROPOSAL DRAFTING prompt — see ai_agent.smart_truncate_description.
+# Title and tags are never touched. (Scoring uses its own, shorter limit —
+# see GEMINI_SCORING_DESCRIPTION_MAX_CHARS below — since a coarse 0-100
+# match read doesn't need the full detail that draft_proposal() genuinely
+# needs later to "prove understanding" of the client's specific ask.)
 GEMINI_DESCRIPTION_MAX_CHARS = int(os.getenv("GEMINI_DESCRIPTION_MAX_CHARS", "1400"))
+# Truncation length used ONLY for the scoring call — applied to EVERY
+# project (not just matches), so trimming this harder than the proposal
+# limit above saves prompt tokens on every single scoring call, batched or
+# not.
+GEMINI_SCORING_DESCRIPTION_MAX_CHARS = int(os.getenv("GEMINI_SCORING_DESCRIPTION_MAX_CHARS", "600"))
+
+# ---- Score caching ----------------------------------------------------------------
+# Caches score_project()'s result keyed by a hash of (title, the FULL
+# untruncated description, current MY_SKILLS) so a project re-evaluated
+# with byte-for-byte identical content — most commonly the GitHub-fallback
+# retry queue re-checking an entry whose earlier AI call failed, or a
+# repost with unchanged text — skips a fresh Gemini call entirely.
+# Changing MY_SKILLS changes the cache key, so it can never silently serve
+# a score computed against an old skill list. Only the SCORING step is
+# cached: proposal drafting always runs fresh whenever a (possibly cached)
+# score clears MATCH_THRESHOLD, since its prose is deliberately non-
+# deterministic and only runs for the minority of projects that match, so
+# caching it would save little while risking a stale/repetitive proposal.
+SCORE_CACHE_ENABLED = os.getenv("SCORE_CACHE_ENABLED", "true").strip().lower() == "true"
+SCORE_CACHE_FILE = os.getenv("SCORE_CACHE_FILE", "score_cache.json")
+# Oldest entries are evicted once the cache exceeds this many rows, so a
+# long-running process can't grow the file unbounded.
+SCORE_CACHE_MAX_ENTRIES = int(os.getenv("SCORE_CACHE_MAX_ENTRIES", "500"))
 
 # ---- Silent token-usage analytics ------------------------------------------------
 # Local JSON file (see ai_agent.TokenUsageTracker) — unlike the pending-
@@ -121,7 +164,26 @@ MOSTAQL_PROJECTS_URL = os.getenv(
     "MOSTAQL_PROJECTS_URL", "https://mostaql.com/projects"
 )
 # Comma-separated category filters, e.g. "python,data-science,machine-learning"
+# — see MOSTAQL_CATEGORY_URL_TEMPLATE below for how these get turned into
+# actual request URLs. Leave blank (default) to keep scraping the single
+# unfiltered listing page at MOSTAQL_PROJECTS_URL, exactly as before this
+# setting existed.
 MOSTAQL_CATEGORIES = os.getenv("MOSTAQL_CATEGORIES", "")
+# Template used to build one request URL per entry in MOSTAQL_CATEGORIES —
+# {category} is replaced with each slug. The query-param form below
+# (?category=<slug>) is a REASONABLE GUESS at Mostaql's filtering scheme,
+# NOT verified against the live site (this codebase has no network access
+# to Mostaql at development time) — same caveat as scraper.py's SELECTORS
+# dict: open mostaql.com/projects, apply a category filter through the
+# site's own UI, and copy the resulting URL's actual pattern here if it
+# differs (e.g. a path segment like "/projects/category/<slug>" instead of
+# a query param). If MOSTAQL_CATEGORIES is set but this template turns out
+# to be wrong, scraper.py's existing block/anomaly detection and per-page
+# logging will surface it (0 projects parsed, or a suspiciously identical
+# page across different "categories") rather than failing silently.
+MOSTAQL_CATEGORY_URL_TEMPLATE = os.getenv(
+    "MOSTAQL_CATEGORY_URL_TEMPLATE", "https://mostaql.com/projects?category={category}"
+)
 
 # Fetch each NEW project's own detail page to read its official required-
 # skill tags ("المهارات المطلوبة"), used for local pre-filtering before any
@@ -133,21 +195,70 @@ MOSTAQL_CATEGORIES = os.getenv("MOSTAQL_CATEGORIES", "")
 # disabling this only means "back to evaluating every new project."
 FETCH_PROJECT_TAGS = os.getenv("FETCH_PROJECT_TAGS", "true").strip().lower() in ("1", "true", "yes")
 
+# When a project has no official tags to check (FETCH_PROJECT_TAGS=false,
+# or Mostaql simply didn't provide any), ai_agent.local_skill_prefilter()
+# falls back to the same keyword-overlap check applied to the project's
+# own title+description text instead of unconditionally sending every
+# untagged project to Gemini. Disable if this filters out real matches
+# whose descriptions don't happen to use your exact MY_SKILLS wording.
+TITLE_PREFILTER_ENABLED = os.getenv("TITLE_PREFILTER_ENABLED", "true").strip().lower() == "true"
+
 # Client warning system: a project is NEVER skipped/filtered based on the
 # client's profile — a rating below this is just appended as a "⚠️" note in
 # the Telegram message so you can decide with full information. See
 # scraper.build_client_warning / parse_client_info.
 LOW_CLIENT_RATING_THRESHOLD = float(os.getenv("LOW_CLIENT_RATING_THRESHOLD", "3.5"))
 
+# Client-aware proposal tone: a rating at/above this (with at least a few
+# reviews) lets ai_agent.draft_proposal() write with a bit more directness
+# and confidence — advisory only, never mentioned in the proposal text
+# itself (see draft_proposal's docstring and its prompt's explicit rule
+# against referencing the client's rating/history at all).
+STRONG_CLIENT_RATING_THRESHOLD = float(os.getenv("STRONG_CLIENT_RATING_THRESHOLD", "4.5"))
+
+# ---- Outcome tracking (Telegram Won/Lost buttons) ---------------------------
+# Every matched-project Telegram notification includes "✅ فاز بالمشروع" /
+# "❌ لم يفز" buttons (see notifier.build_inline_keyboard). Tapping one is
+# picked up by main.py's telegram_feedback_loop (long-polls Telegram's
+# getUpdates) and recorded via outcome_tracker.record_outcome — see that
+# module's docstring for what this data is (and isn't yet) used for.
+OUTCOME_LOG_FILE = os.getenv("OUTCOME_LOG_FILE", "outcomes.json")
+# Telegram's own long-poll duration (seconds) for getUpdates — the request
+# itself blocks server-side for up to this long waiting for a new button
+# tap, or returns immediately if one's already pending. Not a sleep-then-
+# poll interval.
+TELEGRAM_FEEDBACK_POLL_TIMEOUT = int(os.getenv("TELEGRAM_FEEDBACK_POLL_TIMEOUT", "25"))
+
+# ---- Repost/duplicate detection ---------------------------------------------
+# Flags (advisory only — never suppresses a notification) when a matched
+# project looks like a near-duplicate of one already notified about — see
+# repost_detector.py's docstring for the full rationale and the false-
+# positive trade-off (similarly-worded but genuinely unrelated projects
+# from different clients can happen with generic/templated descriptions,
+# which is exactly why this warns rather than blocks).
+REPOST_DETECTION_ENABLED = os.getenv("REPOST_DETECTION_ENABLED", "true").strip().lower() == "true"
+# Similarity ratio (0-1, via stdlib difflib.SequenceMatcher) at/above which
+# a project is flagged as a likely repost. Kept high by default (0.85) to
+# minimize false positives on the text-comparison approach's biggest
+# limitation — set higher for more caution, lower to catch loosely-
+# reworded reposts at the cost of more false positives.
+REPOST_SIMILARITY_THRESHOLD = float(os.getenv("REPOST_SIMILARITY_THRESHOLD", "0.85"))
+# How many recently-notified projects to keep comparing new ones against —
+# oldest entries are evicted once over this cap, same bounded-growth
+# pattern as ScoreCache.
+REPOST_HISTORY_MAX_ENTRIES = int(os.getenv("REPOST_HISTORY_MAX_ENTRIES", "300"))
+# Entries older than this many days are pruned before comparison, so a
+# project posted months ago can't produce a stale "repost" match.
+REPOST_HISTORY_MAX_AGE_DAYS = int(os.getenv("REPOST_HISTORY_MAX_AGE_DAYS", "30"))
+REPOST_HISTORY_FILE = os.getenv("REPOST_HISTORY_FILE", "repost_history.json")
+
 # ---- Matching / scoring -------------------------------------------------------
-# Mostaql project tags are frequently in Arabic (e.g. "علم البيانات" rather
-# than "Data Science"), so each skill below has an Arabic entry alongside
-# its English one — the local pre-filter matches whichever one appears in
-# the project's actual tags. Add more Arabic synonyms here if you notice
-# real projects being filtered out that shouldn't be (check the
-# "Fetched N tag(s) for project ..." log line in scraper.py to see what
-# Mostaql is actually tagging things with).
-MY_SKILLS = [
+# DEFAULT skill list, used only if the MY_SKILLS env var isn't set (see
+# below). Mostaql project tags are frequently in Arabic (e.g. "علم
+# البيانات" rather than "Data Science"), so each skill below has an
+# Arabic entry alongside its English one — the local pre-filter matches
+# whichever one appears in the project's actual tags/title/description.
+_DEFAULT_MY_SKILLS = [
     "Python", "بايثون",
     "Data Science", "علم البيانات",
     "Machine Learning", "تعلم الآلة", "تعلم الالة",
@@ -159,7 +270,52 @@ MY_SKILLS = [
     "MATLAB", "ماتلاب",
     "Document Formatting", "تنسيق المستندات", "تنسيق مستندات",
 ]
+
+# Comma-separated skill list — overrides _DEFAULT_MY_SKILLS above entirely
+# when set (same "full override, not additive" convention as
+# GEMINI_API_KEYS/MOSTAQL_CATEGORIES elsewhere in this file), e.g.:
+#   MY_SKILLS=Python,بايثون,React,ريأكت,WordPress,ووردبريس
+# This is what makes retuning what the bot looks for a matter of editing
+# ONE environment variable — in Render's dashboard this takes effect on
+# the next restart, no code change or git push required — rather than
+# editing the Python list above and redeploying. Add more Arabic synonyms
+# if you notice real projects being filtered out that shouldn't be (check
+# the "Fetched N tag(s) for project ..." log line in scraper.py to see
+# what Mostaql is actually tagging things with).
+_env_skills = os.getenv("MY_SKILLS", "").strip()
+if _env_skills:
+    MY_SKILLS = [s.strip() for s in _env_skills.split(",") if s.strip()]
+else:
+    MY_SKILLS = _DEFAULT_MY_SKILLS
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
+
+# ---- Adaptive threshold under quota pressure --------------------------------
+# As today's ACTUAL Gemini request count (see ai_agent.DailyRequestTracker —
+# real requests, not projects; a batch scoring call is 1 request regardless
+# of how many projects it covers) climbs toward the estimated daily quota,
+# the EFFECTIVE threshold used to decide "does this clear the bar" ramps up
+# from MATCH_THRESHOLD toward ADAPTIVE_THRESHOLD_HARD_CAP — see
+# ai_agent.get_effective_match_threshold(). The idea: spend the LAST portion
+# of the day's request budget on the strongest remaining candidates instead
+# of running out partway through an average one on a first-come-first-served
+# basis. MATCH_THRESHOLD itself is left completely unchanged by this — it's
+# always the FLOOR the effective threshold ramps up FROM, never below it.
+ADAPTIVE_THRESHOLD_ENABLED = os.getenv("ADAPTIVE_THRESHOLD_ENABLED", "true").strip().lower() == "true"
+# Rough total daily request budget across ALL configured keys combined.
+# Free tier is commonly ~20 requests/day per key for gemini-3.5-flash (see
+# the POLL_INTERVAL note below) — defaults to that figure times however
+# many keys are configured; override directly if your actual tier differs.
+GEMINI_ESTIMATED_DAILY_QUOTA = int(os.getenv("GEMINI_ESTIMATED_DAILY_QUOTA", str(20 * max(len(GEMINI_API_KEYS), 1))))
+# Ramping starts once today's usage crosses this fraction of the estimated
+# quota (0.7 = starts tightening at 70% used) and reaches the hard cap at
+# 100%+ used.
+ADAPTIVE_THRESHOLD_TRIGGER_RATIO = float(os.getenv("ADAPTIVE_THRESHOLD_TRIGGER_RATIO", "0.7"))
+# The effective threshold never climbs above this, however close to (or
+# past) the quota wall the day gets — keeps at least a chance of matching
+# a truly exceptional project even at 100%+ of estimated quota used,
+# rather than a threshold that could climb high enough to reject everything.
+ADAPTIVE_THRESHOLD_HARD_CAP = float(os.getenv("ADAPTIVE_THRESHOLD_HARD_CAP", "90"))
+DAILY_REQUEST_COUNT_FILE = os.getenv("DAILY_REQUEST_COUNT_FILE", "daily_request_count.json")
 
 # ---- Loop timing (seconds) ----------------------------------------------------
 # Fast polling (5-10 min) so new projects are caught close to real-time.

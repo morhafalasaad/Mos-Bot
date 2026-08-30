@@ -8,6 +8,12 @@ the AI-drafted Arabic proposal — with a tap-to-open inline button for the
 project page and the proposal formatted as a tap-to-copy code block — so
 the human can review and submit the proposal manually on Mostaql
 (human-in-the-loop by design).
+
+Matched-project notifications also include two feedback buttons ("✅ فاز
+بالمشروع" / "❌ لم يفز") when a project_id is available — main.py's
+telegram_feedback_loop listens for taps on these and records the outcome
+via outcome_tracker.py. This is the only feedback loop in the whole
+pipeline that learns whether a sent proposal actually won real work.
 """
 
 import json
@@ -60,18 +66,33 @@ def build_message(
     suggested_price: str = None,
     delivery_days: int = None,
     client_warning: str = None,
+    matched_skills: list = None,
+    missing_skills: list = None,
+    repost_warning: str = None,
 ) -> str:
     # Placed right under the score, above price/delivery, so it's one of
     # the first things visible — a warning the user has to scroll past
     # defeats the point of "still able to apply, but aware."
     warning_line = f"\n{client_warning}" if client_warning else ""
+    repost_line = f"\n{repost_warning}" if repost_warning else ""
     price_line = f"\n💵 *السعر المقترح:* {_escape_markdown(str(suggested_price))}" if suggested_price else ""
     days_line = f"\n⏱ *مدة التسليم المتوقعة:* {delivery_days} يوم" if delivery_days else ""
     budget_line = f"\n💰 *ميزانية العميل:* {_escape_markdown(budget)}" if budget else ""
+    # Fast-scan skill breakdown right under the score — lets you gut-check
+    # a match without reading the full proposal first. Each list is
+    # already capped to a handful of items by the schema (see
+    # ai_agent.ProjectScoreSchema), so no further truncation needed here.
+    skills_line = ""
+    if matched_skills:
+        skills_line += f"\n✅ *مهارات متطابقة:* {_escape_markdown(', '.join(matched_skills))}"
+    if missing_skills:
+        skills_line += f"\n➕ *مهارات غير متوفرة لديك:* {_escape_markdown(', '.join(missing_skills))}"
     return (
         f"🆕 *مشروع جديد مطابق*\n\n"
         f"📌 *العنوان:* {_escape_markdown(title)}\n"
         f"📊 *نسبة التطابق:* {score:.0f}%"
+        f"{repost_line}"
+        f"{skills_line}"
         f"{warning_line}"
         f"{price_line}"
         f"{days_line}"
@@ -81,15 +102,26 @@ def build_message(
     )
 
 
-def build_inline_keyboard(url: str) -> dict:
-    """A single button that opens the project page directly on Mostaql —
-    Telegram inline keyboard 'url' buttons require a valid absolute
-    http(s) URL, which project.url always is (see scraper.py)."""
-    return {
-        "inline_keyboard": [
-            [{"text": "🔗 فتح المشروع على مستقل", "url": url}],
-        ]
-    }
+def build_inline_keyboard(url: str, project_id: str = None) -> dict:
+    """
+    A button that opens the project page directly on Mostaql — Telegram
+    inline keyboard 'url' buttons require a valid absolute http(s) URL,
+    which project.url always is (see scraper.py).
+
+    When project_id is given, a second row of outcome-tracking buttons is
+    added: "✅ فاز بالمشروع" / "❌ لم يفز", with callback_data
+    "won:<id>" / "lost:<id>" that main.py's telegram_feedback_loop listens
+    for (see outcome_tracker.py). Kept as a SEPARATE row from the "open
+    project" button so the two purposes (act now vs. record later) stay
+    visually distinct rather than crowding one row.
+    """
+    keyboard = [[{"text": "🔗 فتح المشروع على مستقل", "url": url}]]
+    if project_id:
+        keyboard.append([
+            {"text": "✅ فاز بالمشروع", "callback_data": f"won:{project_id}"},
+            {"text": "❌ لم يفز", "callback_data": f"lost:{project_id}"},
+        ])
+    return {"inline_keyboard": keyboard}
 
 
 def build_pending_message(
@@ -187,11 +219,16 @@ def notify_matched_project(
     suggested_price: str = None,
     delivery_days: int = None,
     client_warning: str = None,
+    project_id: str = None,
+    matched_skills: list = None,
+    missing_skills: list = None,
+    repost_warning: str = None,
 ):
     message = build_message(
         title, url, score, proposal_ar, budget, suggested_price, delivery_days, client_warning,
+        matched_skills, missing_skills, repost_warning,
     )
-    send_telegram_message(message, reply_markup=build_inline_keyboard(url))
+    send_telegram_message(message, reply_markup=build_inline_keyboard(url, project_id))
 
 
 def notify_error(context: str, error_message: str):

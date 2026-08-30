@@ -21,14 +21,21 @@ queue.Queue:
     or a slow API response — it just keeps discovering and queuing work.
 
   - CONSUMER (consumer_loop): the only thread that ever touches Gemini.
-    Pulls projects off `task_queue` and evaluates them one at a time,
-    respecting ai_agent's PROACTIVE local rate limiter (see
-    ai_agent.KeyRateLimiter) — if every key is at its local RPM cap, the
-    Gemini call is skipped entirely (zero requests sent) and the project
-    goes straight to the GitHub fallback, rather than firing a request we
-    can already tell would be rejected. Also periodically re-processes the
-    GitHub-hosted retry queue/issues (still Gemini-bound work, so it
-    belongs on this thread, not the producer's).
+    Drains `task_queue` in BATCHES (see _drain_batch, up to
+    config.GEMINI_SCORE_BATCH_SIZE projects grouped into one scoring call
+    via ai_agent.evaluate_projects_batch) rather than one project per
+    Gemini call — the single biggest lever for staying inside a free-tier
+    daily request quota (RPD) when several new projects appear in the same
+    poll cycle. Proposal drafting still happens one call per accepted
+    match (see evaluate_projects_batch's docstring for why). Also respects
+    ai_agent's PROACTIVE local rate limiter (see ai_agent.KeyRateLimiter)
+    — if every key is at its local RPM cap, the Gemini call is skipped
+    entirely (zero requests sent) and the batch goes straight to the
+    GitHub fallback, rather than firing a request we can already tell
+    would be rejected. Also periodically re-processes the GitHub-hosted
+    retry queue/issues (still Gemini-bound work, so it belongs on this
+    thread, not the producer's) — those stay one-at-a-time, since the
+    retry backlog's volume/burstiness doesn't justify batching complexity.
 
 Because they're on separate threads, ANY blocking on the consumer side
 (a retryDelay sleep, a slow response, being fully rate-limited) has zero
@@ -37,11 +44,11 @@ effect on the producer's ability to keep scraping and queuing new projects.
 Stability principles carried over from the previous single-loop version:
 - Every loop iteration is wrapped in try/except so one bad iteration can
   never kill its thread.
-- Each individual project evaluation runs under its own watchdog timeout
-  (reusing the config.CYCLE_TIMEOUT env var — see
-  process_project_with_watchdog) so a single hung Gemini call can't stall
-  the consumer thread forever; it just gets abandoned and treated as
-  unavailable (routed to the GitHub fallback) so the queue keeps draining.
+- Each batch of projects runs under its own watchdog timeout (reusing the
+  config.CYCLE_TIMEOUT env var — see process_batch_with_watchdog) so a
+  single hung Gemini call can't stall the consumer thread forever; it just
+  gets abandoned and treated as unavailable (routed to the GitHub
+  fallback) so the queue keeps draining.
 - All logging is flushed immediately (FlushingStreamHandler) so Render's
   log dashboard shows activity from BOTH threads in real time.
 """
@@ -70,6 +77,7 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
 import concurrent.futures
+import json
 import logging
 import queue
 import random
@@ -77,6 +85,8 @@ import sys
 import threading
 import time
 import traceback
+
+import requests
 
 import config  # safe to import first: no logging side effects at import time
 
@@ -118,6 +128,8 @@ import ai_agent
 import notifier
 import health_server
 import github_fallback
+import outcome_tracker
+import repost_detector
 
 # Thread-safe hand-off between the producer and consumer. Bounded so a
 # consumer that falls far behind (e.g. heavily rate-limited) applies mild
@@ -125,8 +137,8 @@ import github_fallback
 # unbounded in memory — acceptable for Mostaql's realistic project volume.
 task_queue = queue.Queue(maxsize=config.TASK_QUEUE_MAXSIZE)
 
-# Single-worker executor used ONLY to enforce a hard per-task timeout
-# around individual Gemini evaluations — see process_project_with_watchdog.
+# Single-worker executor used ONLY to enforce a hard per-batch timeout
+# around each Gemini evaluation batch — see process_batch_with_watchdog.
 _eval_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="eval-watchdog")
 
 
@@ -170,6 +182,7 @@ def retry_pending_github_queue():
                 description=entry.get("description", ""),
                 budget=entry.get("budget"),
                 tags=entry.get("tags") or [],
+                client_info=entry.get("client_info"),
             )
         except Exception:
             logger.error(
@@ -209,7 +222,10 @@ def retry_pending_github_queue():
             title, evaluation.match_score,
         )
         sent_to_telegram = False
-        if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
+        if evaluation.match_score >= evaluation.effective_threshold and evaluation.proposal_ar:
+            repost_warning = repost_detector.check_and_record(
+                entry.get("id"), title, entry.get("description", ""),
+            )
             notifier.notify_matched_project(
                 title=title,
                 url=entry.get("url", ""),
@@ -219,13 +235,17 @@ def retry_pending_github_queue():
                 suggested_price=evaluation.suggested_price,
                 delivery_days=evaluation.delivery_days,
                 client_warning=entry.get("client_warning"),
+                project_id=entry.get("id"),
+                matched_skills=evaluation.matched_skills,
+                missing_skills=evaluation.missing_skills,
+                repost_warning=repost_warning,
             )
             sent_to_telegram = True
         else:
             logger.info(
                 "Pending project '%s' scored below threshold after re-evaluation "
                 "(%.0f%%, threshold %.0f%%) — no notification",
-                title, evaluation.match_score, config.MATCH_THRESHOLD,
+                title, evaluation.match_score, evaluation.effective_threshold,
             )
         ai_agent.record_token_usage(title, evaluation, sent_to_telegram=sent_to_telegram)
         if entry.get("issue_number"):
@@ -303,7 +323,9 @@ def retry_open_github_issues():
             issue_number, title, evaluation.match_score,
         )
         sent_to_telegram = False
-        if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
+        if evaluation.match_score >= evaluation.effective_threshold and evaluation.proposal_ar:
+            synthetic_id = f"issue-{issue_number}"
+            repost_warning = repost_detector.check_and_record(synthetic_id, title, parsed.get("description", ""))
             notifier.notify_matched_project(
                 title=title,
                 url=parsed.get("url") or issue.get("html_url", ""),
@@ -312,6 +334,13 @@ def retry_open_github_issues():
                 budget=parsed.get("budget"),
                 suggested_price=evaluation.suggested_price,
                 delivery_days=evaluation.delivery_days,
+                # No real project.id survives in a GitHub Issue body — the
+                # issue number is still a stable, unique identifier for
+                # outcome tracking AND repost-detection purposes.
+                project_id=synthetic_id,
+                matched_skills=evaluation.matched_skills,
+                missing_skills=evaluation.missing_skills,
+                repost_warning=repost_warning,
             )
             sent_to_telegram = True
         ai_agent.record_token_usage(title, evaluation, sent_to_telegram=sent_to_telegram)
@@ -349,24 +378,21 @@ def handle_ai_unavailable(project, reason: str):
     )
 
 
-def process_project(project):
+def _handle_evaluation_result(project, evaluation):
     """
-    Evaluates ONE project and handles the result — success (notify if it
-    clears threshold), below threshold (log only), or AI-unavailable
-    (handle_ai_unavailable, which now includes a PROACTIVE rate-limit
-    bypass via ai_agent's KeyRateLimiter, not just reactive 429s).
+    Shared tail logic for ONE project's already-computed Evaluation —
+    identical regardless of whether the scoring call that produced it was
+    a single-project call or one entry out of a batched call. Decides
+    whether to notify Telegram, logs the outcome, records analytics, and
+    routes to the GitHub fallback if the AI call failed for this specific
+    project (which now includes a PROACTIVE rate-limit bypass via
+    ai_agent's KeyRateLimiter, not just reactive 429s). Never raises.
     """
-    logger.info("Evaluating project: %s (tags: %s)", project.title, project.tags)
-    evaluation = ai_agent.evaluate_project(
-        title=project.title,
-        description=project.description,
-        budget=project.budget,
-        tags=project.tags,
-    )
-
     logger.info(
-        "Match score for '%s': %.0f%% (%s) | suggested price: %s | delivery: %s day(s)",
+        "Match score for '%s': %.0f%% (%s) | matched: %s | missing: %s | "
+        "suggested price: %s | delivery: %s day(s)",
         project.title, evaluation.match_score, evaluation.reasoning,
+        evaluation.matched_skills or "-", evaluation.missing_skills or "-",
         evaluation.suggested_price, evaluation.delivery_days,
     )
 
@@ -375,11 +401,15 @@ def process_project(project):
         handle_ai_unavailable(project, reason=f"Gemini API call failed: {evaluation.reasoning}")
         return
 
-    # >= : must match ai_agent.py's evaluate_project() comparison exactly
-    # (score >= config.MATCH_THRESHOLD) — that's the gate that actually
-    # decides whether proposal_ar gets set at all.
+    # >= : must match ai_agent.py's evaluate_project()/evaluate_projects_batch()
+    # comparison exactly. Compares against evaluation.effective_threshold
+    # (not the static config.MATCH_THRESHOLD) since that reflects whatever
+    # threshold was ACTUALLY used to decide whether to draft a proposal —
+    # which may be higher under quota pressure (see
+    # config.ADAPTIVE_THRESHOLD_ENABLED / ai_agent.get_effective_match_threshold).
     sent_to_telegram = False
-    if evaluation.match_score >= config.MATCH_THRESHOLD and evaluation.proposal_ar:
+    if evaluation.match_score >= evaluation.effective_threshold and evaluation.proposal_ar:
+        repost_warning = repost_detector.check_and_record(project.id, project.title, project.description)
         notifier.notify_matched_project(
             title=project.title,
             url=project.url,
@@ -389,46 +419,86 @@ def process_project(project):
             suggested_price=evaluation.suggested_price,
             delivery_days=evaluation.delivery_days,
             client_warning=project.client_warning,
+            project_id=project.id,
+            matched_skills=evaluation.matched_skills,
+            missing_skills=evaluation.missing_skills,
+            repost_warning=repost_warning,
         )
         sent_to_telegram = True
     else:
         logger.info(
-            "Below threshold (project scored %.0f%%, threshold is %.0f%%) — skipping notification",
-            evaluation.match_score, config.MATCH_THRESHOLD,
+            "Below threshold (project scored %.0f%%, effective threshold is %.0f%%) — skipping notification",
+            evaluation.match_score, evaluation.effective_threshold,
         )
 
     ai_agent.record_token_usage(project.title, evaluation, sent_to_telegram=sent_to_telegram)
 
 
-def process_project_with_watchdog(project):
+def process_project_batch(projects):
     """
-    Runs process_project() under a hard wall-clock timeout
+    Evaluates a LIST of projects together: scored in ONE Gemini call via
+    ai_agent.evaluate_projects_batch (see its docstring for why proposal
+    drafting stays per-project), then each result is handled individually
+    via _handle_evaluation_result — notify/log/record/fallback, exactly
+    like the old one-project-at-a-time path. A batch of size 1 behaves
+    identically to the previous single-project flow.
+    """
+    logger.info(
+        "Evaluating batch of %s project(s): %s",
+        len(projects), ", ".join(p.title for p in projects),
+    )
+    batch_input = [
+        {"title": p.title, "description": p.description, "budget": p.budget, "tags": p.tags, "client_info": p.client_info}
+        for p in projects
+    ]
+    evaluations = ai_agent.evaluate_projects_batch(batch_input)
+
+    for project, evaluation in zip(projects, evaluations):
+        try:
+            _handle_evaluation_result(project, evaluation)
+        except Exception:
+            logger.error(
+                "Unexpected error handling evaluation result for '%s':\n%s",
+                project.title, traceback.format_exc(),
+            )
+
+
+def process_batch_with_watchdog(projects):
+    """
+    Runs process_project_batch() under a hard wall-clock timeout
     (config.CYCLE_TIMEOUT — name kept for backward compatibility with
-    existing deployments' env vars, but its role is now "max seconds for a
-    SINGLE evaluation task" rather than a whole batch). If it times out,
-    the project is treated as AI-unavailable (routed to the GitHub
-    fallback) rather than silently disappearing, and the consumer thread
-    moves on to the next queued item instead of stalling forever.
+    existing deployments' env vars). If it times out, EVERY project in the
+    batch is treated as AI-unavailable (routed to the GitHub fallback)
+    rather than silently disappearing, and the consumer thread moves on
+    instead of stalling forever.
+
+    Trade-off vs. the old per-project watchdog: a stuck call now risks
+    abandoning up to GEMINI_SCORE_BATCH_SIZE projects at once instead of
+    just one. Kept acceptable by the default batch size being modest (5)
+    and CYCLE_TIMEOUT being generous (600s default) — and it's the same
+    trade batching itself makes (fewer, larger calls) applied consistently
+    to the failure path too.
     """
-    future = _eval_executor.submit(process_project, project)
+    future = _eval_executor.submit(process_project_batch, projects)
     try:
         future.result(timeout=config.CYCLE_TIMEOUT)
     except concurrent.futures.TimeoutError:
         logger.error(
-            "Evaluation of '%s' exceeded the %ss task timeout and was "
-            "abandoned — treating as AI-unavailable so the consumer isn't "
-            "stalled; the stuck call keeps running in the background and "
-            "its thread is discarded.",
-            project.title, config.CYCLE_TIMEOUT,
+            "Batch evaluation of %s project(s) exceeded the %ss task timeout "
+            "and was abandoned — treating all of them as AI-unavailable so "
+            "the consumer isn't stalled; the stuck call keeps running in the "
+            "background and its thread is discarded.",
+            len(projects), config.CYCLE_TIMEOUT,
         )
         try:
-            handle_ai_unavailable(project, reason=f"Evaluation task exceeded {config.CYCLE_TIMEOUT}s timeout")
+            for project in projects:
+                handle_ai_unavailable(project, reason=f"Batch evaluation task exceeded {config.CYCLE_TIMEOUT}s timeout")
         except Exception:
-            logger.error("Fallback handling after timeout also failed:\n%s", traceback.format_exc())
+            logger.error("Fallback handling after batch timeout also failed:\n%s", traceback.format_exc())
     except Exception:
         logger.error(
-            "Unexpected error while processing '%s':\n%s",
-            project.title, traceback.format_exc(),
+            "Unexpected error while processing a batch of %s project(s):\n%s",
+            len(projects), traceback.format_exc(),
         )
 
 
@@ -523,22 +593,61 @@ def consumer_loop():
             # Blocks up to a modest timeout so the loop wakes regularly to
             # re-check the GitHub backlog even when task_queue is empty,
             # without busy-looping.
-            project = task_queue.get(timeout=10)
-        except queue.Empty:
+            batch = _drain_batch(config.GEMINI_SCORE_BATCH_SIZE, first_item_timeout=10)
+        except Exception:
+            logger.error("Unexpected error draining the task queue:\n%s", traceback.format_exc())
+            continue
+
+        if not batch:
             continue
 
         try:
-            process_project_with_watchdog(project)
+            process_batch_with_watchdog(batch)
         except Exception:
-            # Should be unreachable (process_project_with_watchdog already
+            # Should be unreachable (process_batch_with_watchdog already
             # catches everything internally), but this is the absolute
             # last line of defense so the consumer thread can never die.
             logger.error(
-                "Unhandled error processing '%s' from the queue:\n%s",
-                getattr(project, "title", "?"), traceback.format_exc(),
+                "Unhandled error processing a batch of %s project(s) from the queue:\n%s",
+                len(batch), traceback.format_exc(),
             )
         finally:
-            task_queue.task_done()
+            for _ in batch:
+                task_queue.task_done()
+
+
+def _drain_batch(max_size: int, first_item_timeout: int = 10, max_wait_seconds: int = None):
+    """
+    Pulls up to `max_size` items off task_queue, grouping a burst of
+    newly-scraped projects into one batch for scoring. Blocks up to
+    `first_item_timeout` seconds waiting for the FIRST item — same cadence
+    as before, so the consumer still wakes regularly to recheck the GitHub
+    backlog when the queue is empty. Once at least one item is in hand, it
+    keeps greedily grabbing more (without re-blocking the full timeout)
+    until either `max_size` is reached or `max_wait_seconds` has elapsed
+    since the first item arrived — whichever comes first — so a slow
+    trickle of projects doesn't wait indefinitely for a full batch to form.
+    Returns [] if nothing arrived within `first_item_timeout`.
+    """
+    if max_wait_seconds is None:
+        max_wait_seconds = config.GEMINI_BATCH_MAX_WAIT_SECONDS
+
+    try:
+        first = task_queue.get(timeout=first_item_timeout)
+    except queue.Empty:
+        return []
+
+    batch = [first]
+    deadline = time.time() + max_wait_seconds
+    while len(batch) < max_size:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            batch.append(task_queue.get(timeout=remaining))
+        except queue.Empty:
+            break
+    return batch
 
 
 def safe_sleep(total_seconds: int, chunk_seconds: int = 60):
@@ -556,12 +665,161 @@ def safe_sleep(total_seconds: int, chunk_seconds: int = 60):
             logger.debug("...still sleeping (%ss remaining)", remaining)
 
 
+# ---------------------------------------------------------------------------
+# Telegram outcome-feedback listener (Won/Lost buttons)
+# ---------------------------------------------------------------------------
+# Runs on its OWN daemon thread, entirely separate from the producer/
+# consumer — it never touches task_queue or Gemini, so it can't be blocked
+# by (or block) anything else in the pipeline. See outcome_tracker.py's
+# docstring for what this data is for.
+
+_TELEGRAM_OFFSET_FILE = "telegram_update_offset.txt"
+
+
+def _load_telegram_offset() -> int:
+    """Reads back the last-processed Telegram update_id + 1, so a restart
+    doesn't reprocess (and double-toast) already-handled button taps.
+    Returns 0 (process from whatever Telegram currently has queued) if the
+    file doesn't exist yet or is unreadable."""
+    try:
+        with open(_TELEGRAM_OFFSET_FILE, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return 0
+
+
+def _save_telegram_offset(offset: int):
+    """Best-effort persistence — if this write fails, worst case is a
+    restart re-processes a few already-handled taps (each is idempotent
+    via outcome_tracker.record_outcome's overwrite semantics), not a
+    crash."""
+    try:
+        with open(_TELEGRAM_OFFSET_FILE, "w", encoding="utf-8") as f:
+            f.write(str(offset))
+    except OSError:
+        pass
+
+
+def _answer_telegram_callback(callback_id: str, text: str):
+    """Acknowledges a callback_query with a small toast notification —
+    required by Telegram regardless of outcome (an unanswered
+    callback_query leaves the tapped button showing an infinite loading
+    spinner on the user's phone until it times out client-side)."""
+    if not callback_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+            data={"callback_query_id": callback_id, "text": text},
+            timeout=config.REQUEST_TIMEOUT,
+        )
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Failed to answer a Telegram callback query: %s", exc)
+
+
+def _handle_feedback_callback(callback: dict):
+    """
+    Parses one callback_query update from a Won/Lost button tap, records
+    the outcome, and answers it with a confirmation toast. Never raises —
+    a malformed or unexpected callback is just logged and acknowledged
+    with a generic notice rather than crashing the listener thread.
+    """
+    callback_id = callback.get("id")
+    try:
+        data = callback.get("data", "") or ""
+        action, _, project_id = data.partition(":")
+        if action not in ("won", "lost") or not project_id:
+            logger.warning("Ignoring unrecognized Telegram callback_data: %r", data)
+            _answer_telegram_callback(callback_id, "⚠️ إجراء غير معروف")
+            return
+
+        # Best-effort only: pulls the project title back out of the
+        # notification message's own text (the "📌 *العنوان:* ..." line
+        # notifier.build_message() already wrote) purely for a nicer log
+        # line / outcomes.json entry — recording still succeeds without it.
+        title = None
+        message_text = (callback.get("message") or {}).get("text") or ""
+        for line in message_text.splitlines():
+            if "العنوان" in line:
+                title = line.split(":", 1)[-1].strip().strip("*").strip()
+                break
+
+        ok = outcome_tracker.record_outcome(project_id, title=title, outcome=action)
+        if ok:
+            confirmation = "✅ تم تسجيل الفوز بالمشروع — شكراً لتحديث النتيجة" if action == "won" else "📝 تم تسجيل عدم الفوز — شكراً لتحديث النتيجة"
+        else:
+            confirmation = "⚠️ تعذر حفظ النتيجة، حاول مرة أخرى"
+        _answer_telegram_callback(callback_id, confirmation)
+    except Exception:
+        logger.error("Unexpected error handling a Telegram feedback callback:\n%s", traceback.format_exc())
+        _answer_telegram_callback(callback_id, "⚠️ حدث خطأ غير متوقع")
+
+
+def telegram_feedback_loop():
+    """
+    Long-polls Telegram's getUpdates for callback_query button taps from
+    the Won/Lost buttons (see notifier.build_inline_keyboard). Uses
+    Telegram's own server-side long-polling (the request blocks up to
+    config.TELEGRAM_FEEDBACK_POLL_TIMEOUT seconds waiting for a new
+    update, or returns immediately if one's already pending) rather than
+    sleep-then-poll — near-instant button response without hammering the
+    API between taps.
+
+    Every iteration is wrapped in try/except (same stability principle as
+    producer_loop/consumer_loop) so a transient network error can't kill
+    this thread — it just waits a few seconds and retries.
+    """
+    logger.info("Telegram feedback listener starting (Won/Lost outcome-button tracking)")
+    offset = _load_telegram_offset()
+
+    while True:
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={
+                    "offset": offset,
+                    "timeout": config.TELEGRAM_FEEDBACK_POLL_TIMEOUT,
+                    # Telegram expects a JSON-encoded array here, same
+                    # reason reply_markup gets json.dumps()'d in notifier.py
+                    # — a raw Python list would be form-encoded wrong.
+                    "allowed_updates": json.dumps(["callback_query"]),
+                },
+                # A bit of slack over Telegram's own long-poll timeout, so
+                # a legitimately slow-but-successful long poll isn't
+                # mistaken for a hung connection and aborted right as
+                # Telegram was about to respond.
+                timeout=config.TELEGRAM_FEEDBACK_POLL_TIMEOUT + 10,
+            )
+            if resp.status_code != 200:
+                logger.warning("Telegram getUpdates returned HTTP %s: %s", resp.status_code, resp.text[:200])
+                time.sleep(5)
+                continue
+
+            updates = resp.json().get("result", [])
+            for update in updates:
+                offset = update["update_id"] + 1
+                callback = update.get("callback_query")
+                if callback:
+                    _handle_feedback_callback(callback)
+
+            if updates:
+                _save_telegram_offset(offset)
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Telegram feedback listener request failed (will retry): %s", exc)
+            time.sleep(5)
+        except Exception:
+            logger.error("Unexpected error in Telegram feedback listener:\n%s", traceback.format_exc())
+            time.sleep(5)
+
+
 def main():
     logger.info("Starting Mostaql AI Freelance Assistant worker (producer/consumer architecture)...")
     logger.info(
-        "Match threshold: %s%% | Gemini timeout: %ss | Local RPM cap/key: %s | Task queue max size: %s",
+        "Match threshold: %s%% | Gemini timeout: %ss | Local RPM cap/key: %s | "
+        "Task queue max size: %s | Score batch size: %s (max wait %ss)",
         config.MATCH_THRESHOLD, config.GEMINI_TIMEOUT,
         config.GEMINI_MAX_RPM_PER_KEY, config.TASK_QUEUE_MAXSIZE,
+        config.GEMINI_SCORE_BATCH_SIZE, config.GEMINI_BATCH_MAX_WAIT_SECONDS,
     )
 
     # Health-check server for Render's Web Service port scan — independent
@@ -570,11 +828,13 @@ def main():
 
     producer_thread = threading.Thread(target=producer_loop, name="producer", daemon=True)
     consumer_thread = threading.Thread(target=consumer_loop, name="consumer", daemon=True)
+    feedback_thread = threading.Thread(target=telegram_feedback_loop, name="telegram-feedback", daemon=True)
     producer_thread.start()
     consumer_thread.start()
+    feedback_thread.start()
 
-    # The main thread's only job now is to stay alive and notice if either
-    # worker thread unexpectedly dies (both loops already catch every
+    # The main thread's only job now is to stay alive and notice if any
+    # worker thread unexpectedly dies (all three loops already catch every
     # exception internally per-iteration, so this should be rare — it'd
     # take something like an interpreter-level error to actually kill a
     # thread despite that). No auto-respawn: this alerts loudly via both
@@ -583,7 +843,7 @@ def main():
     alerted_dead_threads = set()
     while True:
         time.sleep(30)
-        for t in (producer_thread, consumer_thread):
+        for t in (producer_thread, consumer_thread, feedback_thread):
             if not t.is_alive() and t.name not in alerted_dead_threads:
                 alerted_dead_threads.add(t.name)
                 logger.critical("Thread '%s' has died unexpectedly — it will NOT be auto-restarted.", t.name)
