@@ -1370,5 +1370,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.064
+  },
+  {
+    "timestamp": "2026-08-30T20:08:20Z",
+    "project_title": "اختبار اختراق (Penetration Testing) لتطبيق ويب",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 398,
+    "output_tokens": 147,
+    "total_tokens": 545,
+    "original_desc_length": 357,
+    "truncated_desc_length": 357,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 5.43
   }
 ]
