@@ -1342,5 +1342,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 5.814
+  },
+  {
+    "timestamp": "2026-08-30T19:50:09Z",
+    "project_title": "مطوّر  HWID Spoofer",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1455,
+    "output_tokens": 442,
+    "total_tokens": 1897,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.772
   }
 ]
