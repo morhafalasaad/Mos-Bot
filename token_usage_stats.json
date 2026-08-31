@@ -1454,5 +1454,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 5.035
+  },
+  {
+    "timestamp": "2026-08-31T07:56:37Z",
+    "project_title": "تطوير تطبيق موبايل Marketplace متخصص في بيع وشراء الكتب",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1460,
+    "output_tokens": 484,
+    "total_tokens": 1944,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 4.317
   }
 ]
