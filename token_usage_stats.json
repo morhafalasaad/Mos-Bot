@@ -1412,5 +1412,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.971
+  },
+  {
+    "timestamp": "2026-08-31T06:32:13Z",
+    "project_title": "تنفيذ أداة أتمتة لإنشاء السير الذاتية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1511,
+    "output_tokens": 432,
+    "total_tokens": 1943,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 2.753
   }
 ]
