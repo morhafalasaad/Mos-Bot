@@ -1664,5 +1664,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.222
+  },
+  {
+    "timestamp": "2026-08-31T15:15:48Z",
+    "project_title": "تصميم موقع ووردبريس احترافي لشركة توريدات ومعدات لحام",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 309,
+    "output_tokens": 131,
+    "total_tokens": 440,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.656
+  },
+  {
+    "timestamp": "2026-08-31T15:15:48Z",
+    "project_title": "تطوير نظام حضور وغياب ودرجات لمدرس (Web App + بوت تليجرام)",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 309,
+    "output_tokens": 131,
+    "total_tokens": 440,
+    "original_desc_length": 432,
+    "truncated_desc_length": 432,
+    "match_score": 45.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.656
   }
 ]
