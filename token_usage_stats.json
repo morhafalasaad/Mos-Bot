@@ -1720,5 +1720,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.985
+  },
+  {
+    "timestamp": "2026-08-31T17:39:27Z",
+    "project_title": "إنشاء موقع وتطبيق موبايل لتعليم الحروف باستخدم موقع replit",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 368,
+    "output_tokens": 86,
+    "total_tokens": 454,
+    "original_desc_length": 264,
+    "truncated_desc_length": 264,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.977
   }
 ]
