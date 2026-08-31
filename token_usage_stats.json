@@ -1566,5 +1566,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 3.055
+  },
+  {
+    "timestamp": "2026-08-31T12:50:07Z",
+    "project_title": "استعاده نظام المكالمات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 312,
+    "output_tokens": 123,
+    "total_tokens": 435,
+    "original_desc_length": 122,
+    "truncated_desc_length": 122,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.249
   }
 ]
