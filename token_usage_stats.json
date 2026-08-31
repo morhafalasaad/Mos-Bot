@@ -1538,5 +1538,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 3.289
+  },
+  {
+    "timestamp": "2026-08-31T12:09:18Z",
+    "project_title": "تصميم وكتابة البروفايل التعريفي لعلامة فقاعات | Bubbles",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 425,
+    "output_tokens": 119,
+    "total_tokens": 544,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.351
   }
 ]
