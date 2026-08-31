@@ -1608,5 +1608,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.246
+  },
+  {
+    "timestamp": "2026-08-31T13:09:01Z",
+    "project_title": "مطور Flutter و Laravel لتهيئة وتعديل تطبيق توصيل وتدريب قيادة جاهز – تطبيق \"سار | Sar\"",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 463,
+    "output_tokens": 139,
+    "total_tokens": 602,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 50.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.051
   }
 ]
