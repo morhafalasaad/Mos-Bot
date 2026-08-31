@@ -1650,5 +1650,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.136
+  },
+  {
+    "timestamp": "2026-08-31T14:51:45Z",
+    "project_title": "تصميم دعوة الكترونية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 324,
+    "output_tokens": 88,
+    "total_tokens": 412,
+    "original_desc_length": 156,
+    "truncated_desc_length": 156,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.222
   }
 ]
