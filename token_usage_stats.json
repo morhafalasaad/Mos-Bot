@@ -1440,5 +1440,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.037
+  },
+  {
+    "timestamp": "2026-08-31T07:25:40Z",
+    "project_title": "تعديل علي مشروع سابق",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 305,
+    "output_tokens": 119,
+    "total_tokens": 424,
+    "original_desc_length": 138,
+    "truncated_desc_length": 138,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 5.035
   }
 ]
