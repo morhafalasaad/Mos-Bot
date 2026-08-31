@@ -1552,5 +1552,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.351
+  },
+  {
+    "timestamp": "2026-08-31T12:37:53Z",
+    "project_title": "مطور Python وAI لتنفيذ نموذج أولي بسيط لمساعد تعليمي ذكي مخصص للتعلم والتدريب",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1490,
+    "output_tokens": 486,
+    "total_tokens": 1976,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 95.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.055
   }
 ]
