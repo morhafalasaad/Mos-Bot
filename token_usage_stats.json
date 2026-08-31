@@ -1580,5 +1580,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.249
+  },
+  {
+    "timestamp": "2026-08-31T12:56:34Z",
+    "project_title": "عندي تطبيق ارساليات لمنطقتي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 291,
+    "output_tokens": 127,
+    "total_tokens": 418,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 20.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.246
+  },
+  {
+    "timestamp": "2026-08-31T12:56:34Z",
+    "project_title": "متطلبات تطوير منصة خدمات منزلية ومقاولات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 291,
+    "output_tokens": 127,
+    "total_tokens": 418,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.246
   }
 ]
