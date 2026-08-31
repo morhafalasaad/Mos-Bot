@@ -1832,5 +1832,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 7.133
+  },
+  {
+    "timestamp": "2026-08-31T18:50:52Z",
+    "project_title": "موقع الكتروني احترافي ذو واجهة بسطية للمستخدم ويدعم الدفع الاكتروني",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 348,
+    "output_tokens": 153,
+    "total_tokens": 501,
+    "original_desc_length": 170,
+    "truncated_desc_length": 170,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 24.739
   }
 ]
