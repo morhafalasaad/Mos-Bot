@@ -1468,5 +1468,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 4.317
+  },
+  {
+    "timestamp": "2026-08-31T08:31:49Z",
+    "project_title": "خبير في استخدام ادوات الذكاء الاصطناعي ومتمكن في البرمجيات الخاصة به",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 327,
+    "output_tokens": 81,
+    "total_tokens": 408,
+    "original_desc_length": 120,
+    "truncated_desc_length": 120,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 2.111
   }
 ]
