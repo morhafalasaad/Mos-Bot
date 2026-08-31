@@ -1482,5 +1482,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 2.111
+  },
+  {
+    "timestamp": "2026-08-31T08:38:11Z",
+    "project_title": "تطوير منصة ويب متكاملة لأتمتة الكتيبات والتقارير (ابتداً MVP مع خطة توسع)",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1522,
+    "output_tokens": 437,
+    "total_tokens": 1959,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 2.987
   }
 ]
