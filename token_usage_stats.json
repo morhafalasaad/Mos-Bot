@@ -1496,5 +1496,33 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 2.987
+  },
+  {
+    "timestamp": "2026-08-31T09:54:44Z",
+    "project_title": "تحويل ملف وورد الي ملف عرض تقديمي ( بريزنتيشن )",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1255,
+    "output_tokens": 441,
+    "total_tokens": 1696,
+    "original_desc_length": 243,
+    "truncated_desc_length": 243,
+    "match_score": 95.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 2.486
+  },
+  {
+    "timestamp": "2026-08-31T09:54:44Z",
+    "project_title": "تطوير منصة تواصل مهني (موقع + تطبيق موبايل) شبيهة بـ LinkedIn - على مراحل",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 269,
+    "output_tokens": 148,
+    "total_tokens": 417,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.751
   }
 ]
