@@ -1622,5 +1622,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.051
+  },
+  {
+    "timestamp": "2026-08-31T14:17:25Z",
+    "project_title": "سيستم إدارة رحلات Go Live",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 410,
+    "output_tokens": 161,
+    "total_tokens": 571,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 50.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.267
   }
 ]
