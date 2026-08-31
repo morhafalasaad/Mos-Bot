@@ -1734,47 +1734,5 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.977
-  },
-  {
-    "timestamp": "2026-08-31T18:26:57Z",
-    "project_title": "تصميم و تنفيذ واجهة لموقع ووردبريس تعريفي",
-    "key_alias": "Gemini key #1",
-    "prompt_tokens": 0,
-    "output_tokens": 0,
-    "total_tokens": 0,
-    "original_desc_length": 205,
-    "truncated_desc_length": 205,
-    "match_score": null,
-    "sent_to_telegram": false,
-    "proposal_generated": false,
-    "response_time_sec": 30.099
-  },
-  {
-    "timestamp": "2026-08-31T18:27:01Z",
-    "project_title": "تصميم و تنفيذ واجهة لموقع ووردبريس تعريفي",
-    "key_alias": "Gemini key #1",
-    "prompt_tokens": 309,
-    "output_tokens": 119,
-    "total_tokens": 428,
-    "original_desc_length": 205,
-    "truncated_desc_length": 205,
-    "match_score": 10.0,
-    "sent_to_telegram": false,
-    "proposal_generated": false,
-    "response_time_sec": 1.006
-  },
-  {
-    "timestamp": "2026-08-31T18:27:06Z",
-    "project_title": "تصميم و تنفيذ واجهة لموقع ووردبريس تعريفي",
-    "key_alias": "unknown",
-    "prompt_tokens": 0,
-    "output_tokens": 0,
-    "total_tokens": 0,
-    "original_desc_length": 205,
-    "truncated_desc_length": 205,
-    "match_score": 10.0,
-    "sent_to_telegram": false,
-    "proposal_generated": false,
-    "response_time_sec": 0.0
   }
 ]
