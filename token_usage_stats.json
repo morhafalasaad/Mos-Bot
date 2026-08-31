@@ -1524,5 +1524,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.751
+  },
+  {
+    "timestamp": "2026-08-31T10:45:09Z",
+    "project_title": "تطوير تطبيق طلب توصيل (تاكسي) - Taxi F - باستخدام Flutter - على مراحل",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1486,
+    "output_tokens": 430,
+    "total_tokens": 1916,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 95.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.289
   }
 ]
