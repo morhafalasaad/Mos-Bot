@@ -1636,5 +1636,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.267
+  },
+  {
+    "timestamp": "2026-08-31T14:44:37Z",
+    "project_title": "مطور Power platform متمكن لاستكمال تطويره وتحويله إلى تطبيق متكامل",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 424,
+    "output_tokens": 137,
+    "total_tokens": 561,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.136
   }
 ]
