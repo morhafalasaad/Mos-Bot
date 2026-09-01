@@ -228,6 +228,11 @@ OUTCOME_LOG_FILE = os.getenv("OUTCOME_LOG_FILE", "outcomes.json")
 # tap, or returns immediately if one's already pending. Not a sleep-then-
 # poll interval.
 TELEGRAM_FEEDBACK_POLL_TIMEOUT = int(os.getenv("TELEGRAM_FEEDBACK_POLL_TIMEOUT", "25"))
+# How long to back off after a 409 Conflict (another process already
+# long-polling this same bot token) before retrying — deliberately longer
+# than the 5s used for other transient errors, since retrying fast can't
+# make a conflict resolve any sooner. See main.py's telegram_feedback_loop.
+TELEGRAM_CONFLICT_BACKOFF_SECONDS = int(os.getenv("TELEGRAM_CONFLICT_BACKOFF_SECONDS", "30"))
 
 # ---- Repost/duplicate detection ---------------------------------------------
 # Flags (advisory only — never suppresses a notification) when a matched
@@ -379,10 +384,23 @@ GEMINI_MAX_RPM_PER_KEY = int(os.getenv("GEMINI_MAX_RPM_PER_KEY", "14"))
 # rate limits, timeouts, or API errors that survive the current (key,
 # model) pair. See ai_agent._generate(). Override via a comma-separated
 # GEMINI_MODEL_CASCADE env var if your available models/tiers differ.
+#
+# gemini-2.5-flash-lite was REMOVED from this default (previously the
+# 2nd entry) after Google retired it entirely — it started returning a
+# permanent `404 NOT_FOUND: ... no longer available to new users` for
+# every single call, not a transient/rate-limit error. Unlike a rate
+# limit (worth retrying later, or on a different key/model), a retired
+# model can NEVER succeed again — leaving it in the cascade meant every
+# fallback chain that fell through past the first model wasted an
+# attempt (and the latency of a full request round-trip) on something
+# guaranteed to fail, before ever reaching a model that could actually
+# work. If gemini-2.5-flash (still below) starts doing the same, remove
+# it here too — Google tends to retire an entire model generation
+# together, though that isn't confirmed for this one as of this writing.
 GEMINI_MODEL_CASCADE = [
     m.strip() for m in os.getenv(
         "GEMINI_MODEL_CASCADE",
-        "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-3.5-flash,gemini-2.5-flash",
+        "gemini-3.5-flash-lite,gemini-3.5-flash,gemini-2.5-flash",
     ).split(",") if m.strip()
 ]
 
@@ -395,7 +413,6 @@ GEMINI_MODEL_CASCADE = [
 # back to GEMINI_MAX_RPM_PER_KEY.
 MODEL_RPM_LIMITS = {
     "gemini-3.5-flash-lite": int(os.getenv("GEMINI_RPM_FLASH_LITE_35", "15")),
-    "gemini-2.5-flash-lite": int(os.getenv("GEMINI_RPM_FLASH_LITE_25", "10")),
     "gemini-3.5-flash": int(os.getenv("GEMINI_RPM_FLASH_35", "5")),
     "gemini-2.5-flash": int(os.getenv("GEMINI_RPM_FLASH_25", "5")),
 }
