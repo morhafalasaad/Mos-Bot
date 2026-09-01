@@ -2560,5 +2560,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 47.924
+  },
+  {
+    "timestamp": "2026-09-01T13:13:49Z",
+    "project_title": "تطوير لعبة شطرنج تفاعلية مع ذكاء اصطناعي ومؤقت",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1515,
+    "output_tokens": 404,
+    "total_tokens": 1919,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 10.509
   }
 ]
