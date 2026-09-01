@@ -25,5 +25,29 @@
     "issue_number": 41,
     "queued_at": "2026-09-01T11:18:22.500964+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1273699",
+    "title": "تعديلات على برنامج سطح مكتب",
+    "description": "تعديلاات على برنامج سطح مكتب تعديلاات بخصوص الدزاين عجميع الواجهات تعديلاات في بعض اكواد ومراجعه كامله من اخطاء 3تعديلاات برمجيه معقده داخليه عميقه الغرض والهدف اكمال المشروع وليس عرض خدمات",
+    "url": "https://mostaql.com/project/1273699-%D8%AA%D8%B9%D8%AF%D9%8A%D9%84%D8%A7%D8%AA-%D8%B9%D9%84%D9%89-%D8%A8%D8%B1%D9%86%D8%A7%D9%85%D8%AC-%D8%B3%D8%B7%D8%AD-%D9%85%D9%83%D8%AA%D8%A8",
+    "budget": "$100.00 - $250.00",
+    "duration": "5 أيام",
+    "tags": [
+      "برمجة",
+      "تطوير البرمجيات",
+      "برمجة مواقع",
+      "برمجة قواعد البيانات"
+    ],
+    "client_warning": null,
+    "client_info": {
+      "rating": null,
+      "reviews_count": null,
+      "is_new": null
+    },
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 42,
+    "queued_at": "2026-09-01T11:18:24.789810+00:00",
+    "retry_count": 0
   }
 ]
