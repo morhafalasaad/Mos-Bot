@@ -679,24 +679,30 @@ _TELEGRAM_OFFSET_FILE = "telegram_update_offset.txt"
 def _load_telegram_offset() -> int:
     """Reads back the last-processed Telegram update_id + 1, so a restart
     doesn't reprocess (and double-toast) already-handled button taps.
-    Returns 0 (process from whatever Telegram currently has queued) if the
-    file doesn't exist yet or is unreadable."""
+    Returns 0 (process from whatever Telegram currently has queued) on
+    ANY failure — missing file, corrupt content, or anything else — never
+    raises, matching the fail-safe convention used by every other
+    persistence helper in this codebase (ScoreCache, DailyRequestTracker,
+    outcome_tracker, repost_detector)."""
     try:
         with open(_TELEGRAM_OFFSET_FILE, "r", encoding="utf-8") as f:
             return int(f.read().strip())
-    except (FileNotFoundError, ValueError, OSError):
+    except Exception:
         return 0
 
 
 def _save_telegram_offset(offset: int):
-    """Best-effort persistence — if this write fails, worst case is a
-    restart re-processes a few already-handled taps (each is idempotent
-    via outcome_tracker.record_outcome's overwrite semantics), not a
-    crash."""
+    """Best-effort persistence — if this write fails for ANY reason, worst
+    case is a restart re-processes a few already-handled taps (each is
+    idempotent via outcome_tracker.record_outcome's overwrite semantics),
+    not a crash. Catches broad Exception rather than just OSError, same
+    fail-safe convention as every other persistence helper in this
+    codebase (ScoreCache, DailyRequestTracker, outcome_tracker,
+    repost_detector)."""
     try:
         with open(_TELEGRAM_OFFSET_FILE, "w", encoding="utf-8") as f:
             f.write(str(offset))
-    except OSError:
+    except Exception:
         pass
 
 
