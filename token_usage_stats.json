@@ -2532,5 +2532,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 3.996
+  },
+  {
+    "timestamp": "2026-09-01T12:37:40Z",
+    "project_title": "تطوير نظام وكيل ذكاء اصطناعي تفاعلي (AI Voice & Chatbot) للمكالمات والواتساب بالدارجة المغربية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1500,
+    "output_tokens": 437,
+    "total_tokens": 1937,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 24.178
   }
 ]
