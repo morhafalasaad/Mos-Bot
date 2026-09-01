@@ -2630,5 +2630,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.0
+  },
+  {
+    "timestamp": "2026-09-01T16:10:24Z",
+    "project_title": "تخصيص تطبيق الشريك للغرف الصوتية + لوحة تحكم كاملة (نسخة جاهزة)",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 458,
+    "output_tokens": 130,
+    "total_tokens": 588,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 11.226
   }
 ]
