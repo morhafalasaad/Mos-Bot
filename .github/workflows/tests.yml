@@ -23,7 +23,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Matches runtime.txt exactly, so CI reflects the same interpreter
       # version the bot actually runs under on Render.
