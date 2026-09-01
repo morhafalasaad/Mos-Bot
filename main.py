@@ -513,6 +513,7 @@ def producer_loop():
         config.POLL_INTERVAL_MIN, config.POLL_INTERVAL_MAX,
     )
     while True:
+        health_server.update_status(producer_last_heartbeat=time.time())
         try:
             new_projects = scraper.get_new_projects()
             logger.info("Producer: found %s new project(s) this scrape", len(new_projects))
@@ -561,6 +562,7 @@ def consumer_loop():
     last_token_stats_sync = 0.0
 
     while True:
+        health_server.update_status(consumer_last_heartbeat=time.time(), queue_size=task_queue.qsize())
         try:
             now = time.time()
             if now - last_github_retry_check >= config.GITHUB_RETRY_CHECK_INTERVAL:
@@ -779,6 +781,7 @@ def telegram_feedback_loop():
     offset = _load_telegram_offset()
 
     while True:
+        health_server.update_status(feedback_last_heartbeat=time.time())
         try:
             resp = requests.get(
                 f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/getUpdates",
@@ -796,6 +799,26 @@ def telegram_feedback_loop():
                 # Telegram was about to respond.
                 timeout=config.TELEGRAM_FEEDBACK_POLL_TIMEOUT + 10,
             )
+            if resp.status_code == 409:
+                # Telegram allows only ONE active long-poll connection per
+                # bot token — a 409 here means a second process (a
+                # leftover local dev run, a duplicate Render service, or
+                # the brief overlap between old/new instances during a
+                # zero-downtime deploy) is also calling getUpdates with
+                # the SAME token right now. Retrying fast doesn't help a
+                # conflict resolve any sooner than it already will on its
+                # own, so this backs off longer than a generic transient
+                # error to avoid spamming logs with a warning every 5s
+                # for something retrying won't fix.
+                logger.warning(
+                    "Telegram getUpdates got HTTP 409 Conflict — another process is "
+                    "already long-polling this bot token. If this is happening during "
+                    "a deploy, it should clear on its own within a normal deploy window "
+                    "as the old instance shuts down. If it persists, check for a leftover "
+                    "local run or a duplicate service using the same TELEGRAM_BOT_TOKEN.",
+                )
+                time.sleep(config.TELEGRAM_CONFLICT_BACKOFF_SECONDS)
+                continue
             if resp.status_code != 200:
                 logger.warning("Telegram getUpdates returned HTTP %s: %s", resp.status_code, resp.text[:200])
                 time.sleep(5)
