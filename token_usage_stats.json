@@ -2644,5 +2644,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 11.226
+  },
+  {
+    "timestamp": "2026-09-01T17:49:22Z",
+    "project_title": "تطوير نظام تجارة إلكترونية مزدوج الطبقات وبنية تحتية متطورة (WooCommerce",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 431,
+    "output_tokens": 102,
+    "total_tokens": 533,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 2.16
   }
 ]
