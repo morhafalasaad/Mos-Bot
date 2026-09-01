@@ -2588,5 +2588,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.062
+  },
+  {
+    "timestamp": "2026-09-01T13:36:46Z",
+    "project_title": "مبرمج لتصميم متجر الكتروني لبيع الدهانات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 364,
+    "output_tokens": 103,
+    "total_tokens": 467,
+    "original_desc_length": 248,
+    "truncated_desc_length": 248,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.069
   }
 ]
