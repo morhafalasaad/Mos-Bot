@@ -2168,5 +2168,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.0
+  },
+  {
+    "timestamp": "2026-09-01T10:16:37Z",
+    "project_title": "مستشار مالي ذكي بالذكاء الاصطناعي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1489,
+    "output_tokens": 440,
+    "total_tokens": 1929,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 5.75
+  },
+  {
+    "timestamp": "2026-09-01T10:16:37Z",
+    "project_title": "فحص أداء شامل (Profiling) وضبط مسار الصوت لمنصة تعليمية بالذكاء الاصطناعي",
+    "key_alias": "unknown",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 30.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.0
   }
 ]
