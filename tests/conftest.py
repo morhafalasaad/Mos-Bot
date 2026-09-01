@@ -26,6 +26,7 @@ touches the real files in the project root.
 
 import os
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +41,7 @@ import pytest  # noqa: E402  (must come after the sys.path fix above)
 
 import ai_agent  # noqa: E402
 import config  # noqa: E402
+import health_server  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +71,18 @@ def isolated_state_files(tmp_path, monkeypatch):
     # already-constructed instance's stored path, so they're rebuilt here.
     monkeypatch.setattr(ai_agent, "_score_cache", ai_agent.ScoreCache())
     monkeypatch.setattr(ai_agent, "_daily_request_tracker", ai_agent.DailyRequestTracker())
+
+    # health_server keeps its own module-level status dict (thread
+    # heartbeats, queue depth) and start time — reset both so one test's
+    # update_status() calls can never leak into another's assertions,
+    # regardless of test execution order.
+    monkeypatch.setattr(health_server, "_status", {
+        "producer_last_heartbeat": None,
+        "consumer_last_heartbeat": None,
+        "feedback_last_heartbeat": None,
+        "queue_size": None,
+    })
+    monkeypatch.setattr(health_server, "_started_at", time.time())
 
     yield
 
