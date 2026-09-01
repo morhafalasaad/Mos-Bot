@@ -2868,5 +2868,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.534
+  },
+  {
+    "timestamp": "2026-09-01T21:11:15Z",
+    "project_title": "تصميم لوجو",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 296,
+    "output_tokens": 121,
+    "total_tokens": 417,
+    "original_desc_length": 82,
+    "truncated_desc_length": 82,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 22.115
   }
 ]
