@@ -33,6 +33,9 @@ pytest tests/test_batch_scoring.py::test_batch_scoring_reduces_call_count -v
 | `test_notifier.py` | Telegram message and inline-keyboard construction |
 | `test_scraper_categories.py` | `MOSTAQL_CATEGORIES` → request URL building |
 | `test_my_skills_config.py` | `MY_SKILLS` env var override behavior |
+| `test_main_telegram_offset.py` | Telegram feedback offset persistence, fail-safe against any exception type |
+| `test_health_server.py` | `/status` snapshot, heartbeat staleness detection across all three worker threads |
+| `test_incident_regressions.py` | Regression coverage for the retired `gemini-2.5-flash-lite` model and the Telegram 409 Conflict handling fix |
 
 ## How isolation works
 
