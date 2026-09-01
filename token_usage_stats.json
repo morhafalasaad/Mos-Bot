@@ -2672,5 +2672,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 6.196
+  },
+  {
+    "timestamp": "2026-09-01T19:35:44Z",
+    "project_title": "عمل نظام Issabel مكالمات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 410,
+    "output_tokens": 136,
+    "total_tokens": 546,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.13
   }
 ]
