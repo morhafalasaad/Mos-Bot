@@ -1,0 +1,15 @@
+# Keeps GitHub Actions versions (actions/checkout, actions/setup-python,
+# etc. in .github/workflows/tests.yml) current automatically. This is the
+# durable fix for the "Node.js 20 is deprecated... forced to run on
+# Node.js 24" warning: both actions still DECLARE Node 20 in their metadata
+# even though GitHub's runners already execute them on a newer runtime
+# regardless (which is why the warning is non-blocking today) — the
+# warning goes away once the action authors ship a release that declares
+# the newer runtime, and Dependabot opens a PR the moment that happens
+# rather than this requiring someone to notice and bump it by hand.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
