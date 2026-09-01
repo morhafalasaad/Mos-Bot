@@ -2658,5 +2658,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 2.16
+  },
+  {
+    "timestamp": "2026-09-01T19:05:02Z",
+    "project_title": "مدرسين جميع التخصصات لمنصة تعليمية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 346,
+    "output_tokens": 154,
+    "total_tokens": 500,
+    "original_desc_length": 243,
+    "truncated_desc_length": 243,
+    "match_score": 30.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 6.196
   }
 ]
