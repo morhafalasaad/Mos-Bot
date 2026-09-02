@@ -83,5 +83,34 @@
     "issue_number": 60,
     "queued_at": "2026-09-02T08:19:40.153048+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1273931",
+    "title": "تطبيق توصيل طلبات",
+    "description": "مطلوب مبرمج لرفل وفلتر لتطور تطبيق شغال واضافة ابل بي Fluttre getx phplaravel mysQl restful Api github Digitalocean المطلوب تطوير وتحسين التطبيق الحالي التعامل مع الباك اند و Apl تطوير وربط الخدمات الموجوده واضافة ابل بي بشكل كامل التاكد من العمل وبط بي الباك اند بشكل سليم والرفع للسيرفر وادارة Vps عند الحاجة يشترط ان المبرمج عنده خبره الكفايه وقادر التعامل مع المشروع من frontend للباك اند للسيرفر",
+    "url": "https://mostaql.com/project/1273931-%D8%AA%D8%B7%D8%A8%D9%8A%D9%82-%D8%AA%D9%88%D8%B5%D9%8A%D9%84-%D8%B7%D9%84%D8%A8%D8%A7%D8%AA",
+    "budget": "$25.00 - $50.00",
+    "duration": "1 يوم",
+    "tags": [
+      "البحث والتطوير",
+      "اختبار البرمجيات",
+      "تطوير الويب",
+      "برمجة",
+      "واجهة برمجة التطبيقات",
+      "برمجة التطبيقات",
+      "تطوير التطبيقات",
+      "إنشاء تطبيق",
+      "flutter"
+    ],
+    "client_warning": null,
+    "client_info": {
+      "rating": null,
+      "reviews_count": null,
+      "is_new": null
+    },
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 61,
+    "queued_at": "2026-09-02T08:19:42.635106+00:00",
+    "retry_count": 0
   }
 ]
