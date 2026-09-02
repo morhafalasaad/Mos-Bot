@@ -112,5 +112,33 @@
     "issue_number": 51,
     "queued_at": "2026-09-02T08:02:26.068655+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1273881",
+    "title": "تصميم لوجو",
+    "description": "تصميم لوجو لشركة تبيع كل مستلزمات الاطفال من ملابس والعاب وأطفال أسم الشركه Tamara",
+    "url": "https://mostaql.com/project/1273881-%D8%AA%D8%B5%D9%85%D9%8A%D9%85-%D9%84%D9%88%D8%AC%D9%88",
+    "budget": "$25.00 - $50.00",
+    "duration": "2 يوم",
+    "tags": [
+      "فوتوشوب",
+      "تصميم",
+      "تصميم الأيقونات",
+      "تصميم جرافيك",
+      "تصميم شعار",
+      "التصميم الإبداعي",
+      "Adobe Illustrator",
+      "تعديل الصور"
+    ],
+    "client_warning": null,
+    "client_info": {
+      "rating": null,
+      "reviews_count": null,
+      "is_new": null
+    },
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 52,
+    "queued_at": "2026-09-02T08:02:28.565294+00:00",
+    "retry_count": 0
   }
 ]
