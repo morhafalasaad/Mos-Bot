@@ -2896,5 +2896,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.938
+  },
+  {
+    "timestamp": "2026-09-02T07:29:58Z",
+    "project_title": "تطبيق توصيل طلبات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1410,
+    "output_tokens": 413,
+    "total_tokens": 1823,
+    "original_desc_length": 400,
+    "truncated_desc_length": 400,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 2.985
   }
 ]
