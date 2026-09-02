@@ -3106,5 +3106,61 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 1.723
+  },
+  {
+    "timestamp": "2026-09-02T14:24:12Z",
+    "project_title": "مدرب ذكاء اصطناعي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 216,
+    "output_tokens": 127,
+    "total_tokens": 343,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 40.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.557
+  },
+  {
+    "timestamp": "2026-09-02T14:24:12Z",
+    "project_title": "تصميم وبناء متجر إلكتروني وصفحة هبوط",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 216,
+    "output_tokens": 127,
+    "total_tokens": 343,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.557
+  },
+  {
+    "timestamp": "2026-09-02T14:24:12Z",
+    "project_title": "مشروع شبة مكتمل على تطبيق  Microsoft Lists",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 216,
+    "output_tokens": 127,
+    "total_tokens": 343,
+    "original_desc_length": 288,
+    "truncated_desc_length": 288,
+    "match_score": 20.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.557
+  },
+  {
+    "timestamp": "2026-09-02T14:24:12Z",
+    "project_title": "مستشار أودو وظيفي Odoo Functional Consultant",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 216,
+    "output_tokens": 127,
+    "total_tokens": 343,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.557
   }
 ]
