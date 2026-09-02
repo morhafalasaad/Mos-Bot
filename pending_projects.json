@@ -53,5 +53,35 @@
     "issue_number": 54,
     "queued_at": "2026-09-02T08:11:57.088692+00:00",
     "retry_count": 0
+  },
+  {
+    "id": "1273947",
+    "title": "تصميم داشبورد تنفيذي لغرفة مراقبة بحرية مرتبط بإكسل للتصدير PDF",
+    "description": "تصميم داشبورد تنفيذي لغرفة مراقبة بحرية مرتبط بإكسل للتصدير PDF",
+    "url": "https://mostaql.com/project/1273947-%D8%AA%D8%B5%D9%85%D9%8A%D9%85-%D8%AF%D8%A7%D8%B4%D8%A8%D9%88%D8%B1%D8%AF-%D8%AA%D9%86%D9%81%D9%8A%D8%B0%D9%8A-%D9%84%D8%BA%D8%B1%D9%81%D8%A9-%D9%85%D8%B1%D8%A7%D9%82%D8%A8%D8%A9-%D8%A8%D8%AD%D8%B1%D9%8A%D8%A9-%D9%85%D8%B1%D8%AA%D8%A8%D8%B7-%D8%A8%D8%A5%D9%83%D8%B3%D9%84-%D9%84%D9%84%D8%AA%D8%B5%D8%AF%D9%8A%D8%B1-pdf",
+    "budget": "$100.00 - $250.00",
+    "duration": "3 أيام",
+    "tags": [
+      "تصميم جرافيك",
+      "التصميم الإبداعي",
+      "مايكروسوفت إكسل",
+      "إدخال بيانات",
+      "تصميم موقع إلكتروني",
+      "تصميم داش بورد",
+      "مايكروسوفت أوفيس",
+      "برمجة",
+      "تطوير البرمجيات",
+      "برمجة التطبيقات"
+    ],
+    "client_warning": null,
+    "client_info": {
+      "rating": null,
+      "reviews_count": null,
+      "is_new": null
+    },
+    "reason": "Gemini API call failed: AI scoring unavailable (error).",
+    "issue_number": 55,
+    "queued_at": "2026-09-02T08:12:00.191368+00:00",
+    "retry_count": 0
   }
 ]
