@@ -3232,5 +3232,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.0
+  },
+  {
+    "timestamp": "2026-09-02T22:53:49Z",
+    "project_title": "تعديل وتحميل موقع إلكتروني على دومين",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 421,
+    "output_tokens": 146,
+    "total_tokens": 567,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 20.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.118
   }
 ]
