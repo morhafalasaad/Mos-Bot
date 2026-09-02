@@ -3218,5 +3218,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 3.173
+  },
+  {
+    "timestamp": "2026-09-02T18:09:07Z",
+    "project_title": "مصمم جرافيك 2D – تعاون شهري عن بُعد",
+    "key_alias": "unknown",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 0,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.0
   }
 ]
