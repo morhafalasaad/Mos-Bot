@@ -2882,5 +2882,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 22.115
+  },
+  {
+    "timestamp": "2026-09-02T06:57:50Z",
+    "project_title": "خبير أتمتة لربط بوت واتساب ذكي بقاعدة بيانات Airtable لتنسيق حجوزات رياضية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 426,
+    "output_tokens": 151,
+    "total_tokens": 577,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 45.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.938
   }
 ]
