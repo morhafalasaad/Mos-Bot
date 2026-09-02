@@ -3176,5 +3176,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.826
+  },
+  {
+    "timestamp": "2026-09-02T15:36:25Z",
+    "project_title": "مطور متخصص لتركيب وتثبيت تطبيق \"StackFood\" بالكامل وإصدار ملفات الـ APK و iOS",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 286,
+    "output_tokens": 124,
+    "total_tokens": 410,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 10.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.632
+  },
+  {
+    "timestamp": "2026-09-02T15:36:25Z",
+    "project_title": "إصلاح جزء برمجي من مشروع منصة قائمة",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 286,
+    "output_tokens": 124,
+    "total_tokens": 410,
+    "original_desc_length": 384,
+    "truncated_desc_length": 384,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.632
   }
 ]
