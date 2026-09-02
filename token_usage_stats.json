@@ -2910,5 +2910,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 2.985
+  },
+  {
+    "timestamp": "2026-09-02T07:49:37Z",
+    "project_title": "تصميم داشبورد تنفيذي لغرفة مراقبة بحرية مرتبط بإكسل للتصدير PDF",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1262,
+    "output_tokens": 467,
+    "total_tokens": 1729,
+    "original_desc_length": 63,
+    "truncated_desc_length": 63,
+    "match_score": 60.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.271
   }
 ]
