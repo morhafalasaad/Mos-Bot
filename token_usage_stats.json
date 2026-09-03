@@ -3288,5 +3288,33 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.0
+  },
+  {
+    "timestamp": "2026-09-03T06:29:11Z",
+    "project_title": "موقع ويب لادارة القضايا وحفظها واعطاء تقارير وأحصائيات",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 296,
+    "output_tokens": 122,
+    "total_tokens": 418,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 30.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.285
+  },
+  {
+    "timestamp": "2026-09-03T06:29:12Z",
+    "project_title": "إنشاء منتج رقمي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1344,
+    "output_tokens": 484,
+    "total_tokens": 1828,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 60.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 4.535
   }
 ]
