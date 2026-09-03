@@ -3344,5 +3344,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 30.369
+  },
+  {
+    "timestamp": "2026-09-03T07:03:01Z",
+    "project_title": "لوحة متابعة اعمال المنافسات والعقود واللجان",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1497,
+    "output_tokens": 413,
+    "total_tokens": 1910,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 15.869
   }
 ]
