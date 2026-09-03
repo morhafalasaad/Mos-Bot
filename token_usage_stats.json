@@ -3456,5 +3456,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.953
+  },
+  {
+    "timestamp": "2026-09-03T10:29:41Z",
+    "project_title": "منصة تقديم ذكي على الوظائف",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1486,
+    "output_tokens": 496,
+    "total_tokens": 1982,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 53.661
   }
 ]
