@@ -3610,5 +3610,47 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 3.155
+  },
+  {
+    "timestamp": "2026-09-03T20:08:00Z",
+    "project_title": "خبير في C# WPF",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": null,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 30.079
+  },
+  {
+    "timestamp": "2026-09-03T20:10:52Z",
+    "project_title": "خبير في C# WPF",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1408,
+    "output_tokens": 481,
+    "total_tokens": 1889,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 8.208
+  },
+  {
+    "timestamp": "2026-09-03T20:10:59Z",
+    "project_title": "خبير في C# WPF",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1038,
+    "output_tokens": 339,
+    "total_tokens": 1377,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 75.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 1.833
   }
 ]
