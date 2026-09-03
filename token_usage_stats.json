@@ -3428,5 +3428,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.172
+  },
+  {
+    "timestamp": "2026-09-03T09:30:19Z",
+    "project_title": "إنشاء موقع وابلكيشن",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 354,
+    "output_tokens": 170,
+    "total_tokens": 524,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 35.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 10.979
   }
 ]
