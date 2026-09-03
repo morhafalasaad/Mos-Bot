@@ -3512,5 +3512,33 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 4.124
+  },
+  {
+    "timestamp": "2026-09-03T13:12:08Z",
+    "project_title": "تصميم موقع الكتروني تعريفي",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 271,
+    "output_tokens": 118,
+    "total_tokens": 389,
+    "original_desc_length": 262,
+    "truncated_desc_length": 262,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 4.246
+  },
+  {
+    "timestamp": "2026-09-03T13:12:08Z",
+    "project_title": "تطوير منصة أكاديمية وطبية دولية (AUVAS) باستخدام إطار العمل Laravel",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 271,
+    "output_tokens": 118,
+    "total_tokens": 389,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 4.246
   }
 ]
