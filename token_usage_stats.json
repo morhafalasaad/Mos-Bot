@@ -3498,5 +3498,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 1.067
+  },
+  {
+    "timestamp": "2026-09-03T11:35:15Z",
+    "project_title": "خبير ذكاء إصطناعي لإنشاء نظام خدمة عملاء على واتساب",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1479,
+    "output_tokens": 447,
+    "total_tokens": 1926,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 70.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 4.124
   }
 ]
