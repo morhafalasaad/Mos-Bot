@@ -3582,5 +3582,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 7.146
+  },
+  {
+    "timestamp": "2026-09-03T17:06:37Z",
+    "project_title": "إعادة تصميم برزنتيشن احترافي عدد صفحات 13",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1240,
+    "output_tokens": 367,
+    "total_tokens": 1607,
+    "original_desc_length": 78,
+    "truncated_desc_length": 78,
+    "match_score": 95.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 9.569
   }
 ]
