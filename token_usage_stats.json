@@ -3316,5 +3316,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 4.535
+  },
+  {
+    "timestamp": "2026-09-03T06:36:31Z",
+    "project_title": "مطلوب Senior Backend & Edge IoT Developer لمرحلة تجريبية مدفوعة — مع تعاون طويل الأمد",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1478,
+    "output_tokens": 487,
+    "total_tokens": 1965,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 90.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 12.906
   }
 ]
