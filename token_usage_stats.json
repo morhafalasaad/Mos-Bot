@@ -3596,5 +3596,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 9.569
+  },
+  {
+    "timestamp": "2026-09-03T19:02:18Z",
+    "project_title": "مبرمج c# wpf وله خبرة كبيرة",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1334,
+    "output_tokens": 406,
+    "total_tokens": 1740,
+    "original_desc_length": 249,
+    "truncated_desc_length": 249,
+    "match_score": 90.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 3.155
   }
 ]
