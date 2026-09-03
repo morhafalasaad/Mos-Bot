@@ -3330,5 +3330,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 12.906
+  },
+  {
+    "timestamp": "2026-09-03T06:55:57Z",
+    "project_title": "مطلوب برمجة برنامج صغير",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 1476,
+    "output_tokens": 424,
+    "total_tokens": 1900,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 85.0,
+    "sent_to_telegram": true,
+    "proposal_generated": true,
+    "response_time_sec": 30.369
   }
 ]
