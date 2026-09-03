@@ -3470,5 +3470,19 @@
     "sent_to_telegram": true,
     "proposal_generated": true,
     "response_time_sec": 53.661
+  },
+  {
+    "timestamp": "2026-09-03T10:41:17Z",
+    "project_title": "إعداد وتشغيل أنظمة إدارة المشاريع والعمليات لتجهيز النظام وبدء العمل عليه فعليًا",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 421,
+    "output_tokens": 127,
+    "total_tokens": 548,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 20.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 0.993
   }
 ]
