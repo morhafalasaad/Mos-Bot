@@ -3554,5 +3554,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 6.624
+  },
+  {
+    "timestamp": "2026-09-03T14:14:30Z",
+    "project_title": "تنفيذ منصة حجوزات سكنية شبيهة بـ Airbnb (موقع ويب + لوحة تحكم + تطبيقين جوال)",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 459,
+    "output_tokens": 173,
+    "total_tokens": 632,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 15.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 7.339
   }
 ]
