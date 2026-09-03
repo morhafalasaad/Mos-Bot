@@ -3484,5 +3484,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 0.993
+  },
+  {
+    "timestamp": "2026-09-03T11:06:22Z",
+    "project_title": "تصميم تجربة تفاعلية",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 397,
+    "output_tokens": 129,
+    "total_tokens": 526,
+    "original_desc_length": 398,
+    "truncated_desc_length": 398,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 1.067
   }
 ]
