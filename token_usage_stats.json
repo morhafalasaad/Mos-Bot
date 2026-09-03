@@ -3400,5 +3400,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 2.198
+  },
+  {
+    "timestamp": "2026-09-03T08:41:26Z",
+    "project_title": "حل مشكلة في Google merchant center المنتجات ترفض بشكل مستمر",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 419,
+    "output_tokens": 132,
+    "total_tokens": 551,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 22.144
   }
 ]
