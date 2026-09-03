@@ -3540,5 +3540,19 @@
     "sent_to_telegram": false,
     "proposal_generated": false,
     "response_time_sec": 4.246
+  },
+  {
+    "timestamp": "2026-09-03T13:38:17Z",
+    "project_title": "مطور مواقع يبرمج 20 صفحة هبوط علي فيجما 100%",
+    "key_alias": "Gemini key #1",
+    "prompt_tokens": 427,
+    "output_tokens": 137,
+    "total_tokens": 564,
+    "original_desc_length": 453,
+    "truncated_desc_length": 453,
+    "match_score": 0.0,
+    "sent_to_telegram": false,
+    "proposal_generated": false,
+    "response_time_sec": 6.624
   }
 ]
