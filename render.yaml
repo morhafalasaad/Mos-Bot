@@ -1,0 +1,57 @@
+# Render Blueprint — lets you deploy this repo via Render's "New -> Blueprint"
+# flow instead of manually filling in every field. Render auto-detects this
+# file when you connect the repo.
+#
+# type: worker = Background Worker (no bound port required, matches the
+# README's recommended free-tier path). If you'd rather run it as a Web
+# Service instead (so the health_server.py endpoint is externally reachable
+# for uptime monitoring), change `type: worker` to `type: web` below.
+#
+# Variables marked `sync: false` are secrets: Render will prompt you to
+# paste in the real value when you create the Blueprint, and it is never
+# stored in this file or committed to git.
+#
+# MONGODB_URI is now REQUIRED (see config.py/_require) — as of the Sept
+# 2026 migration off local-JSON-file + GitHub-Contents-API state, this is
+# the bot's actual durable persistence layer (seen-projects dedup, the
+# score cache, the daily request counter, token-usage analytics, repost
+# history, win/loss outcomes, and the auto-retry queue). Get a free-tier
+# connection string from https://cloud.mongodb.com (an M0 cluster is
+# plenty for this workload) before deploying this Blueprint — the service
+# will fail to start without it, exactly like a missing Gemini key.
+
+services:
+  - type: worker
+    name: mostaql-ai-assistant
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Required — see the note above. mongodb+srv://... connection string
+      # from your Atlas cluster, including username/password.
+      - key: MONGODB_URI
+        sync: false
+      # Optional — only used for an OPTIONAL, secondary human-readable
+      # GitHub Issue/file record when Gemini itself is fully unavailable.
+      # No longer used as the actual retry-queue-of-record (that's
+      # MongoDB now) — leave blank to disable this feature entirely, the
+      # bot's real retry mechanism is unaffected either way.
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      # Optional — only needed if Gemini rejects Render's region.
+      - key: GEMINI_PROXY_URL
+        sync: false
+      # Non-secret settings with fixed values.
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: LOG_LEVEL
+        value: INFO

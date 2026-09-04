@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Pre-migration local state files (Sept 2026) — no longer written by the
+# app (everything moved to MongoDB Atlas, see db.py), kept here only in
+# case an old checkout still has one lying around locally.
+seen_projects.json
+token_usage_stats.json
+score_cache.json
+daily_request_count.json
+outcomes.json
+repost_history.json
+pending_projects.json
+telegram_update_offset.txt

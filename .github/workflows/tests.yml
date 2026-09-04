@@ -1,0 +1,39 @@
+name: Tests
+
+# Runs the full unit test suite (see tests/README.md) automatically on
+# every push and pull request targeting main — nothing here touches real
+# Gemini/Telegram/Mostaql, no secrets are needed: conftest.py supplies
+# placeholder env vars for anything config.py requires at import time.
+#
+# Note: GitHub may print a "Node.js 20 is deprecated... forced to run on
+# Node.js 24" warning for the actions below. This is non-blocking — the
+# actions still work, GitHub's runners already execute them on a newer
+# Node runtime regardless of what the action's own metadata declares.
+# See .github/dependabot.yml, which auto-opens a PR bumping these
+# versions the moment the action authors ship a release that declares
+# the newer runtime, so this doesn't need to be tracked by hand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Matches runtime.txt exactly, so CI reflects the same interpreter
+      # version the bot actually runs under on Render.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12.3"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -v
