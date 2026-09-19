@@ -27,6 +27,9 @@ def test_set_then_get_returns_stored_fields():
         "match_score": 77, "reasoning": "good fit",
         "matched_skills": ["python"], "missing_skills": [],
         "suggested_price": "$100", "delivery_days": 3,
+        # Always present on read (see budget/timeline-adherence feature)
+        # even when not supplied to set() — default to "not adjusted".
+        "budget_timeline_adjusted": False, "budget_timeline_note": "",
     }
 
 
@@ -89,3 +92,33 @@ def test_set_only_persists_whitelisted_fields():
     })
     result = cache.get("T", "D")
     assert "unexpected_field" not in result
+
+
+def test_budget_timeline_fields_survive_a_cache_round_trip():
+    """Regression guard: budget_timeline_adjusted/budget_timeline_note
+    were added to ProjectScoreSchema after ScoreCache's whitelist already
+    existed — confirms the whitelist was updated to include them too,
+    since a silently-dropped field here would have no other test catching
+    it (get()/set() defensively default to False/"" either way, so a
+    dropped field wouldn't even raise)."""
+    cache = ai_agent.ScoreCache()
+    cache.set("T", "D", {
+        "match_score": 80, "reasoning": "x",
+        "suggested_price": "$500", "delivery_days": 10,
+        "budget_timeline_adjusted": True,
+        "budget_timeline_note": "الميزانية المعلنة غير كافية.",
+    })
+    result = cache.get("T", "D")
+    assert result["budget_timeline_adjusted"] is True
+    assert result["budget_timeline_note"] == "الميزانية المعلنة غير كافية."
+
+
+def test_budget_timeline_fields_default_safely_when_absent():
+    """A score cached BEFORE this feature existed (or any dict missing
+    these keys) must not raise on read, and must default to 'not
+    adjusted' rather than None/KeyError."""
+    cache = ai_agent.ScoreCache()
+    cache.set("T", "D", {"match_score": 80, "reasoning": "x"})
+    result = cache.get("T", "D")
+    assert result["budget_timeline_adjusted"] is False
+    assert result["budget_timeline_note"] == ""
