@@ -128,7 +128,12 @@ GEMINI_SCORING_TEMPERATURE = float(os.getenv("GEMINI_SCORING_TEMPERATURE", "0.1"
 # Bumped from 300 -> 380 to accommodate the matched_skills/missing_skills
 # list fields (see ai_agent.ProjectScoreSchema) on top of the original
 # fixed-shape fields.
-GEMINI_SCORING_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_SCORING_MAX_OUTPUT_TOKENS", "380"))
+GEMINI_SCORING_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_SCORING_MAX_OUTPUT_TOKENS", "460"))
+# Separate cap for draft_screening_answers() — this call's output can be
+# substantially longer than the scoring call's small fixed-shape JSON
+# (several full-sentence answers, one per screening question), so it gets
+# its own, larger budget rather than sharing GEMINI_SCORING_MAX_OUTPUT_TOKENS.
+GEMINI_SCREENING_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_SCREENING_MAX_OUTPUT_TOKENS", "800"))
 # Project descriptions longer than this are truncated before being placed
 # into the PROPOSAL DRAFTING prompt — see ai_agent.smart_truncate_description.
 # Title and tags are never touched. (Scoring uses its own, shorter limit —
@@ -497,3 +502,27 @@ GITHUB_QUEUE_MAX_RETRIES = int(os.getenv("GITHUB_QUEUE_MAX_RETRIES", "20"))
 # ai_agent.TokenUsageTracker now writes each record straight to MongoDB
 # as it happens (see record()), so there's nothing left to batch/sync on
 # a timer the way the old GitHub-Contents-API sync needed to be.
+
+# ---- Reply Assistant (client-message triage, pre/post-hire) --------------------
+# A SEPARATE Telegram long-poll listener (see main.py's
+# telegram_reply_assistant_loop / reply_assistant.py) from the existing
+# Won/Lost callback-button listener above — this one reads plain TEXT
+# messages you send the bot (pasting in a client's message), not button
+# taps, and are routed based on whether the pasted text is a genuine
+# client message vs. an ordinary bot command/chat. Disabled by setting
+# REPLY_ASSISTANT_ENABLED=false if you'd rather not run a second
+# long-poll listener at all (e.g. to avoid the two-listener Telegram
+# getUpdates offset-sharing complexity — see reply_assistant.py's
+# docstring for how that's handled).
+REPLY_ASSISTANT_ENABLED = os.getenv("REPLY_ASSISTANT_ENABLED", "true").strip().lower() == "true"
+# How many distinct reply options to generate per pasted client message.
+REPLY_ASSISTANT_OPTION_COUNT = int(os.getenv("REPLY_ASSISTANT_OPTION_COUNT", "3"))
+# Output-token budget for the reply-options Gemini call — needs enough
+# room for 2-3 full draft replies, each a short paragraph.
+GEMINI_REPLY_ASSISTANT_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_REPLY_ASSISTANT_MAX_OUTPUT_TOKENS", "900"))
+# A message this short pasted into the bot chat is almost certainly a
+# command/greeting/typo, not an actual client message worth generating
+# three drafted replies for — below this length, reply_assistant.py skips
+# straight to a lightweight "did you mean to paste a client message?"
+# prompt instead of spending a Gemini call.
+REPLY_ASSISTANT_MIN_MESSAGE_CHARS = int(os.getenv("REPLY_ASSISTANT_MIN_MESSAGE_CHARS", "12"))

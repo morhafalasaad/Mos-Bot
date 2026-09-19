@@ -364,6 +364,20 @@ class Evaluation:
     # — otherwise a project whose proposal was skipped due to a raised
     # effective threshold would be logged/reported against the wrong bar.
     effective_threshold: float = 0.0
+    # --- Budget/timeline adherence (see ProjectScoreSchema.suggested_price/
+    # delivery_days docstrings for the actual rule) — surfaced separately so
+    # notifier.py can show a short note ONLY when the bot deviated from what
+    # the client explicitly asked for, instead of silently substituting a
+    # different number with no explanation visible to the human reviewer.
+    budget_timeline_adjusted: bool = False
+    budget_timeline_note: str = ""
+    # --- Screening-question answers (see draft_screening_answers()) — a
+    # list of {"question": str, "answer": str} dicts, one per detected
+    # question, in the SAME order as project.screening_questions. Empty
+    # list if the project had no screening questions, OR if it did but
+    # drafting answers for them failed (never raises; degrades to []
+    # rather than blocking the rest of the proposal).
+    screening_answers: List[dict] = field(default_factory=list)
 
 
 def _extract_retry_delay_seconds(exc: Exception) -> Optional[float]:
@@ -1070,6 +1084,8 @@ class ScoreCache:
                 "missing_skills": doc.get("missing_skills"),
                 "suggested_price": doc.get("suggested_price"),
                 "delivery_days": doc.get("delivery_days"),
+                "budget_timeline_adjusted": doc.get("budget_timeline_adjusted", False),
+                "budget_timeline_note": doc.get("budget_timeline_note", ""),
             }
         except Exception:
             return None  # unreachable Atlas, anything else -> cache miss
@@ -1093,6 +1109,8 @@ class ScoreCache:
                     "missing_skills": score_data.get("missing_skills"),
                     "suggested_price": score_data.get("suggested_price"),
                     "delivery_days": score_data.get("delivery_days"),
+                    "budget_timeline_adjusted": score_data.get("budget_timeline_adjusted", False),
+                    "budget_timeline_note": score_data.get("budget_timeline_note", ""),
                     "cached_at": datetime.now(timezone.utc),
                 }},
                 upsert=True,
@@ -1381,12 +1399,38 @@ class ProjectScoreSchema(BaseModel):
                      "skills fully cover what the project needs.",
     )
     suggested_price: str = Field(
-        description="A realistic recommended bid price/budget for this project's scope, as a short string "
-                     "including currency, e.g. '$150' or '$300-400'.",
+        description="The bid price to actually use, as a short string including currency, e.g. '$150' or "
+                     "'$300-400'. Budget-adherence rule: if the client stated a budget in the project "
+                     "description AND that budget is a reasonable fit for the project's real scope, this MUST "
+                     "be that exact client-stated figure (or a value inside a stated range) — do not inflate "
+                     "or round it. Only propose a DIFFERENT figure if the client's stated budget is severely "
+                     "unrealistic for the described scope (e.g. an amount that couldn't cover even the "
+                     "cheapest credible execution), in which case use your own realistic estimate instead. If "
+                     "no budget was stated at all, use your own realistic estimate.",
     )
     delivery_days: int = Field(
         ge=1,
-        description="Realistic estimated number of days to complete the project based on its scope.",
+        description="The delivery time to actually use, in days. Timeline-adherence rule: if the client "
+                     "stated a timeframe/deadline in the project description AND it is a reasonable fit for "
+                     "the scope, this MUST be that exact client-stated number of days — do not pad it. Only "
+                     "deviate if the client's stated timeframe is severely unrealistic for the described scope "
+                     "(e.g. days for what clearly needs weeks), in which case use your own realistic estimate "
+                     "instead. If no timeframe was stated at all, use your own realistic estimate.",
+    )
+    budget_timeline_adjusted: bool = Field(
+        default=False,
+        description="True ONLY if suggested_price and/or delivery_days above were set to something DIFFERENT "
+                     "from what the client explicitly stated, because the stated value was judged severely "
+                     "unrealistic. False whenever the client's stated figure was used as-is, or when the "
+                     "client didn't state a figure at all.",
+    )
+    budget_timeline_note: str = Field(
+        default="",
+        description="Empty string if budget_timeline_adjusted is False. If True, ONE short, polite sentence "
+                     "in Arabic justifying the deviation, suitable for showing the freelancer before they send "
+                     "the proposal, e.g. 'الميزانية المعلنة غير كافية لنطاق العمل الموصوف، وهذا تقدير أقرب "
+                     "للواقع.' — this is NEVER inserted into the proposal text itself (see draft_proposal's "
+                     "price/duration rules), it is only surfaced to the human via Telegram.",
     )
 
 
@@ -1426,6 +1470,20 @@ freelancer's OWN listed skills genuinely apply to this project, which
 skills/technologies the project needs that are NOT in the freelancer's
 list (if any), a suggested bid price, and an estimated delivery time in
 days.
+
+BUDGET AND TIMELINE — STRICT ADHERENCE RULE:
+First, check whether the project description itself states a client budget
+and/or a client timeframe/deadline.
+- If it does, and that figure is a REASONABLE fit for the scope described,
+  you MUST use that exact client-stated figure as suggested_price/
+  delivery_days — do not inflate, round, or pad it "to be safe."
+- Only override the client's stated figure if it is SEVERELY unrealistic
+  for the scope (not just "a bit tight" or "a bit generous") — in that
+  case use your own realistic estimate instead, set
+  budget_timeline_adjusted=true, and give one short polite Arabic
+  justification in budget_timeline_note.
+- If the client stated no figure at all, use your own realistic estimate
+  and leave budget_timeline_adjusted=false.
 """
     start = time.time()
     try:
@@ -1733,6 +1791,128 @@ def draft_proposal(
         return None, stats
 
 
+class _ScreeningAnswerItem(BaseModel):
+    question: str = Field(description="The screening question, repeated back EXACTLY as given in the input.")
+    answer: str = Field(
+        description="A specific, technically accurate answer to this exact question, grounded in the actual "
+                     "project description and the freelancer's real skills — never generic boilerplate that "
+                     "could apply to any project. Plain text, no markdown, ready to paste directly into a "
+                     "platform text box. Concise (roughly 2-6 sentences) but substantive enough to demonstrate "
+                     "real understanding, not a one-liner.",
+    )
+
+
+class ScreeningAnswersSchema(BaseModel):
+    answers: List[_ScreeningAnswerItem] = Field(
+        default_factory=list,
+        description="One entry per input question, in the SAME order as given.",
+    )
+
+
+def draft_screening_answers(
+    title: str,
+    description: str,
+    questions: List[str],
+) -> tuple:
+    """
+    Drafts one specific, technically-grounded answer per explicit client
+    screening question (see scraper.parse_screening_questions) — e.g. "How
+    do you propose to implement this?", "What architecture will you use?".
+    Only called when a project actually has screening questions (see
+    _finalize_score_result), so this adds zero extra Gemini cost to every
+    other project.
+
+    Returns (list_of_{"question","answer"}_dicts, call_stats) — mirrors
+    score_project()/draft_proposal()'s (data_or_empty, stats) contract.
+    Never raises: on any failure, returns ([], stats) so a screening-
+    question drafting problem can never block the rest of the evaluation
+    (the match score and main proposal are computed independently and
+    already returned by the time this runs).
+
+    Deliberately a SEPARATE Gemini call from draft_proposal() rather than
+    folded into one bigger prompt: screening answers need to be long-form,
+    fact-specific, and individually addressable (Telegram formats each one
+    as its own copy-paste block — see notifier.build_screening_section),
+    which is a different shape of output than the single flowing cover-
+    letter paragraph draft_proposal() produces, and mixing the two in one
+    prompt risks the model blending proposal prose into an answer or vice
+    versa.
+    """
+    if not questions:
+        return [], dict(_EMPTY_CALL_STATS)
+
+    skills_list = ", ".join(config.MY_SKILLS)
+    numbered_questions = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+
+    prompt = f"""
+You are an expert freelancer answering a client's explicit screening
+questions on a project-bidding platform, so the client can evaluate your
+proposal. These answers appear separately from the main cover letter, so
+each one must fully stand on its own.
+
+Freelancer's real skills (use only what's actually relevant to each
+question — never claim something not in this list): {skills_list}
+
+Project title: {title}
+Project description: {description}
+
+The client asked these screening questions (answer EVERY one, in the same
+order, and repeat each question exactly as given):
+{numbered_questions}
+
+For each question, write a specific, technically accurate, and confident
+answer grounded in the actual project description above — not a generic
+answer that could apply to any project. If a question asks about
+implementation approach or architecture, name concrete steps/technologies
+that are genuinely appropriate for THIS project's stated requirements. Do
+not invent capabilities outside the freelancer's real skill list. Do not
+mention price, budget, or delivery time/deadline in any answer. Plain
+text only, no markdown formatting, ready to paste directly into a text
+box.
+"""
+    start = time.time()
+    try:
+        response = _generate(
+            prompt,
+            response_schema=ScreeningAnswersSchema,
+            max_output_tokens=config.GEMINI_SCREENING_MAX_OUTPUT_TOKENS,
+        )
+        stats = _extract_call_stats(response, time.time() - start)
+
+        data = None
+        try:
+            parsed = response.parsed
+            if parsed is not None:
+                data = parsed.model_dump()
+        except Exception as parsed_exc:
+            logger.warning("Screening-answers response.parsed access failed, falling back to text parsing: %s", parsed_exc)
+
+        if data is None:
+            try:
+                data = parse_gemini_json(response.text)
+            except ValueError as parse_exc:
+                logger.error("%s", parse_exc)
+                return [], stats
+
+        answers = data.get("answers") if isinstance(data, dict) else None
+        if not isinstance(answers, list):
+            return [], stats
+
+        result = []
+        for item in answers:
+            if not isinstance(item, dict):
+                continue
+            q = str(item.get("question") or "").strip()
+            a = str(item.get("answer") or "").strip()
+            if q and a:
+                result.append({"question": q, "answer": a})
+        return result, stats
+    except Exception as exc:
+        logger.error("Gemini screening-answers call failed: %s", exc, exc_info=True)
+        stats = dict(_EMPTY_CALL_STATS, response_time_sec=time.time() - start, key_alias=_current_key_alias())
+        return [], stats
+
+
 def _ai_failed_evaluation(reason: str, original_desc_length: int, truncated_desc_length: int, score_stats: dict) -> Evaluation:
     """Shared 'scoring didn't produce a usable result' Evaluation, used by
     both evaluate_project() and evaluate_projects_batch() so this shape
@@ -1760,6 +1940,7 @@ def _finalize_score_result(
     original_desc_length: int,
     truncated_desc_length: int,
     client_info: Optional[dict] = None,
+    screening_questions: Optional[List[str]] = None,
 ) -> Evaluation:
     """
     Shared tail logic that turns a raw score_data dict — regardless of
@@ -1767,9 +1948,12 @@ def _finalize_score_result(
     call or a ScoreCache hit — into a complete Evaluation: validates
     match_score, and if it clears MATCH_THRESHOLD, drafts a proposal
     (always fresh, never cached — see ScoreCache's docstring) using the
-    FULL description at its own, longer truncation length. Used by both
-    evaluate_project() and evaluate_projects_batch() so this logic exists
-    in exactly one place.
+    FULL description at its own, longer truncation length, AND (also only
+    above threshold, also always fresh) drafts answers for any explicit
+    screening_questions the project has (see draft_screening_answers) — no
+    point spending a screening-answers call on a project that won't be
+    notified anyway. Used by both evaluate_project() and
+    evaluate_projects_batch() so this logic exists in exactly one place.
     """
     try:
         raw_score = float(score_data.get("match_score", 0))
@@ -1819,9 +2003,14 @@ def _finalize_score_result(
     except (TypeError, ValueError):
         delivery_days = None
 
+    budget_timeline_adjusted = bool(score_data.get("budget_timeline_adjusted", False))
+    budget_timeline_note = str(score_data.get("budget_timeline_note") or "").strip()
+
     proposal = None
     proposal_generated = False
     proposal_stats = dict(_EMPTY_CALL_STATS)
+    screening_answers: List[dict] = []
+    screening_stats = dict(_EMPTY_CALL_STATS)
     # Computed ONCE here and reused for both the decision below and the
     # returned Evaluation, so a threshold that ramps up mid-batch under
     # quota pressure can't produce an inconsistent picture for one project
@@ -1846,6 +2035,11 @@ def _finalize_score_result(
         # Evaluation object below, just never into the proposal text itself.
         proposal, proposal_stats = draft_proposal(title, proposal_desc, budget, client_info)
 
+        if screening_questions:
+            screening_answers, screening_stats = draft_screening_answers(
+                title, proposal_desc, screening_questions,
+            )
+
     return Evaluation(
         match_score=score,
         reasoning=reasoning,
@@ -1854,18 +2048,23 @@ def _finalize_score_result(
         suggested_price=suggested_price,
         delivery_days=delivery_days,
         proposal_ar=proposal,
+        budget_timeline_adjusted=budget_timeline_adjusted,
+        budget_timeline_note=budget_timeline_note,
+        screening_answers=screening_answers,
         original_desc_length=original_desc_length,
         truncated_desc_length=truncated_desc_length,
-        prompt_tokens=score_stats["prompt_tokens"] + proposal_stats["prompt_tokens"],
-        output_tokens=score_stats["output_tokens"] + proposal_stats["output_tokens"],
-        total_tokens=score_stats["total_tokens"] + proposal_stats["total_tokens"],
-        response_time_sec=round(score_stats["response_time_sec"] + proposal_stats["response_time_sec"], 3),
-        # Whichever key was actually used LAST (proposal call if it ran,
-        # otherwise the scoring call) — both usually the same key anyway.
-        # A cache hit leaves score_stats["key_alias"] as None, so this
-        # naturally falls back to the proposal call's key, or None if
-        # neither call actually ran (below-threshold cache hit).
-        key_alias=proposal_stats["key_alias"] or score_stats["key_alias"],
+        prompt_tokens=score_stats["prompt_tokens"] + proposal_stats["prompt_tokens"] + screening_stats["prompt_tokens"],
+        output_tokens=score_stats["output_tokens"] + proposal_stats["output_tokens"] + screening_stats["output_tokens"],
+        total_tokens=score_stats["total_tokens"] + proposal_stats["total_tokens"] + screening_stats["total_tokens"],
+        response_time_sec=round(
+            score_stats["response_time_sec"] + proposal_stats["response_time_sec"] + screening_stats["response_time_sec"], 3,
+        ),
+        # Whichever key was actually used LAST (screening call if it ran,
+        # else proposal call, else the scoring call) — usually all the same
+        # key anyway. A cache hit leaves score_stats["key_alias"] as None,
+        # so this naturally falls back further down the chain, or None if
+        # nothing actually ran (below-threshold cache hit).
+        key_alias=screening_stats["key_alias"] or proposal_stats["key_alias"] or score_stats["key_alias"],
         proposal_generated=proposal_generated,
         effective_threshold=threshold,
     )
@@ -1877,6 +2076,7 @@ def evaluate_project(
     budget: Optional[str] = None,
     tags: Optional[List[str]] = None,
     client_info: Optional[dict] = None,
+    screening_questions: Optional[List[str]] = None,
 ) -> Evaluation:
     """
     Full pipeline for one project:
@@ -1886,11 +2086,16 @@ def evaluate_project(
          this exact (title, description, MY_SKILLS) was already scored
          before (see ScoreCache).
       2. Score it via Gemini if not cached (including price/duration
-         estimates), using the SHORTER scoring-specific truncation.
+         estimates, and budget/timeline adherence — see
+         ProjectScoreSchema), using the SHORTER scoring-specific
+         truncation.
       3. If it clears the threshold, draft a proposal too, using the full
          (longer-truncated) description — client_info (see
          scraper.parse_client_info), if provided, lets draft_proposal()
          adjust TONE ONLY (see its docstring); it never changes scoring.
+         Also, only above threshold, drafts an answer for each entry in
+         screening_questions (see scraper.parse_screening_questions /
+         draft_screening_answers), if any were found on the project.
     Always returns an Evaluation object — never raises — so main.py's loop
     can rely on it unconditionally. Also populates the analytics fields
     (token counts, response time, desc lengths, etc.) that main.py passes
@@ -1938,7 +2143,7 @@ def evaluate_project(
 
     return _finalize_score_result(
         title, description, budget, score_data, score_stats, original_desc_length, truncated_desc_length,
-        client_info=client_info,
+        client_info=client_info, screening_questions=screening_questions,
     )
 
 
@@ -2013,6 +2218,7 @@ def evaluate_projects_batch(projects: List[dict]) -> List[Evaluation]:
                 cached, dict(_EMPTY_CALL_STATS),
                 original_lengths[i], len(scoring_descs[i] or ""),
                 client_info=p.get("client_info"),
+                screening_questions=p.get("screening_questions"),
             )
             continue
 
@@ -2057,6 +2263,7 @@ def evaluate_projects_batch(projects: List[dict]) -> List[Evaluation]:
                 projects[i]["title"], projects[i].get("description") or "", projects[i].get("budget"),
                 score_data, per_item_stats, original_lengths[i], len(scoring_descs[i] or ""),
                 client_info=projects[i].get("client_info"),
+                screening_questions=projects[i].get("screening_questions"),
             )
 
     return results

@@ -130,6 +130,7 @@ import health_server
 import github_fallback
 import outcome_tracker
 import repost_detector
+import reply_assistant
 import db
 
 # Thread-safe hand-off between the producer and consumer. Bounded so a
@@ -183,6 +184,7 @@ def retry_pending_queue():
                 budget=entry.get("budget"),
                 tags=entry.get("tags") or [],
                 client_info=entry.get("client_info"),
+                screening_questions=entry.get("screening_questions") or [],
             )
         except Exception:
             logger.error(
@@ -237,6 +239,9 @@ def retry_pending_queue():
                 matched_skills=evaluation.matched_skills,
                 missing_skills=evaluation.missing_skills,
                 repost_warning=repost_warning,
+                budget_timeline_adjusted=evaluation.budget_timeline_adjusted,
+                budget_timeline_note=evaluation.budget_timeline_note,
+                screening_answers=evaluation.screening_answers,
             )
             sent_to_telegram = True
         else:
@@ -334,6 +339,16 @@ def retry_open_github_issues():
                 matched_skills=evaluation.matched_skills,
                 missing_skills=evaluation.missing_skills,
                 repost_warning=repost_warning,
+                budget_timeline_adjusted=evaluation.budget_timeline_adjusted,
+                budget_timeline_note=evaluation.budget_timeline_note,
+                # NOTE: screening_answers is never populated on this path —
+                # the GitHub Issue body format (see
+                # github_fallback._format_project_markdown/parse_issue_body)
+                # doesn't currently capture screening questions at all, so
+                # there's nothing to re-draft answers for here even if the
+                # original project had some. This is a pre-existing gap in
+                # the Issue-based fallback record, not something evaluate_
+                # project() can recover after the fact.
             )
             sent_to_telegram = True
         ai_agent.record_token_usage(title, evaluation, sent_to_telegram=sent_to_telegram)
@@ -374,6 +389,7 @@ def handle_ai_unavailable(project, reason: str):
         "tags": getattr(project, "tags", None) or [],
         "client_warning": getattr(project, "client_warning", None),
         "client_info": getattr(project, "client_info", None),
+        "screening_questions": getattr(project, "screening_questions", None) or [],
         "reason": reason,
         "issue_number": issue_number,
     })
@@ -428,6 +444,9 @@ def _handle_evaluation_result(project, evaluation):
             matched_skills=evaluation.matched_skills,
             missing_skills=evaluation.missing_skills,
             repost_warning=repost_warning,
+            budget_timeline_adjusted=evaluation.budget_timeline_adjusted,
+            budget_timeline_note=evaluation.budget_timeline_note,
+            screening_answers=evaluation.screening_answers,
         )
         sent_to_telegram = True
     else:
@@ -453,7 +472,11 @@ def process_project_batch(projects):
         len(projects), ", ".join(p.title for p in projects),
     )
     batch_input = [
-        {"title": p.title, "description": p.description, "budget": p.budget, "tags": p.tags, "client_info": p.client_info}
+        {
+            "title": p.title, "description": p.description, "budget": p.budget,
+            "tags": p.tags, "client_info": p.client_info,
+            "screening_questions": getattr(p, "screening_questions", None) or [],
+        }
         for p in projects
     ]
     evaluations = ai_agent.evaluate_projects_batch(batch_input)
@@ -746,21 +769,104 @@ def _handle_feedback_callback(callback: dict):
         _answer_telegram_callback(callback_id, "⚠️ حدث خطأ غير متوقع")
 
 
+def _handle_text_message(message: dict):
+    """
+    Routes one plain-text Telegram message to the Reply Assistant (see
+    reply_assistant.py) — this is what lets you paste a client's message
+    into the bot chat and get back 2-3 drafted reply options, entirely
+    separate from the Won/Lost button-tap flow above. Never raises: a
+    malformed message or a Gemini failure is logged and answered with a
+    short Telegram notice rather than crashing the listener thread.
+
+    Deliberately does NOT try to attach specific project context (title/
+    description) automatically — Telegram gives no reliable way to tell
+    which prior notification a freshly pasted message is "about" unless
+    it's a native reply-to (not required here), so reply_assistant.py
+    works from the pasted text alone. This matches its docstring: project
+    context is optional grounding, not a hard requirement.
+    """
+    text = (message.get("text") or "").strip()
+    chat_id = (message.get("chat") or {}).get("id")
+
+    # Only ever respond in the configured chat — ignores stray messages
+    # from any other chat the bot might technically be reachable from
+    # (e.g. if TELEGRAM_CHAT_ID was later narrowed but the bot token
+    # wasn't rotated). Compared as strings since Telegram's chat_id is a
+    # number but config.TELEGRAM_CHAT_ID is loaded as a string env var.
+    if chat_id is not None and str(chat_id) != str(config.TELEGRAM_CHAT_ID):
+        return
+
+    if not reply_assistant.looks_like_client_message(text):
+        # Deliberately silent for very short/command-like messages rather
+        # than replying with a notice every time — most of these will be
+        # incidental chat noise (an accidental "ok", a stray emoji), and a
+        # bot reply to every single message in the chat would get noisy
+        # fast. The one exception (an explicit "/reply" command) is
+        # handled by the caller before this function is reached.
+        logger.debug("Ignoring short/non-client-message text (%s chars)", len(text))
+        return
+
+    try:
+        summary, options, stats = reply_assistant.get_reply_options(text)
+        ai_agent._token_tracker.record(
+            project_title="(reply-assistant)",
+            key_alias=stats.get("key_alias") or "unknown",
+            prompt_tokens=stats.get("prompt_tokens", 0),
+            output_tokens=stats.get("output_tokens", 0),
+            total_tokens=stats.get("total_tokens", 0),
+            sent_to_telegram=True,
+            response_time_sec=stats.get("response_time_sec", 0.0),
+        )
+        notifier.send_reply_options(summary, options)
+        logger.info(
+            "Reply Assistant: drafted %s option(s) for a pasted client message (%s chars)",
+            len(options), len(text),
+        )
+    except Exception:
+        logger.error("Unexpected error in Reply Assistant handling:\n%s", traceback.format_exc())
+        notifier.send_telegram_message(
+            "⚠️ حدث خطأ غير متوقع أثناء توليد الردود المقترحة. حاول مرة أخرى."
+        )
+
+
 def telegram_feedback_loop():
     """
-    Long-polls Telegram's getUpdates for callback_query button taps from
-    the Won/Lost buttons (see notifier.build_inline_keyboard). Uses
-    Telegram's own server-side long-polling (the request blocks up to
+    Long-polls Telegram's getUpdates for BOTH callback_query updates
+    (Won/Lost button taps — see notifier.build_inline_keyboard) AND plain
+    text messages (pasted client messages routed to the Reply Assistant —
+    see reply_assistant.py / _handle_text_message), sharing ONE offset and
+    ONE long-poll connection.
+
+    IMPORTANT — why this is ONE listener, not two: Telegram's Bot API
+    allows only ONE active getUpdates long-poll connection per bot token
+    at a time; a second independent thread polling the same token would
+    immediately produce the HTTP 409 Conflict handled below, permanently,
+    not just transiently. So callback_query and message updates are both
+    requested here (via allowed_updates) and dispatched to the right
+    handler based on which key is present on each update — this is the
+    ONLY Telegram getUpdates listener in the whole process.
+    config.REPLY_ASSISTANT_ENABLED just gates whether "message" is
+    included in allowed_updates and whether the dispatch branch below
+    does anything; the callback_query handling (outcome tracking) is
+    never affected by that setting either way.
+
+    Uses Telegram's own server-side long-polling (the request blocks up to
     config.TELEGRAM_FEEDBACK_POLL_TIMEOUT seconds waiting for a new
     update, or returns immediately if one's already pending) rather than
-    sleep-then-poll — near-instant button response without hammering the
-    API between taps.
+    sleep-then-poll — near-instant response without hammering the API
+    between events.
 
     Every iteration is wrapped in try/except (same stability principle as
     producer_loop/consumer_loop) so a transient network error can't kill
     this thread — it just waits a few seconds and retries.
     """
-    logger.info("Telegram feedback listener starting (Won/Lost outcome-button tracking)")
+    allowed = ["callback_query"]
+    if config.REPLY_ASSISTANT_ENABLED:
+        allowed.append("message")
+    logger.info(
+        "Telegram feedback/reply listener starting (Won/Lost outcome-button tracking%s)",
+        " + Reply Assistant text messages" if config.REPLY_ASSISTANT_ENABLED else "",
+    )
     offset = _load_telegram_offset()
 
     while True:
@@ -774,7 +880,7 @@ def telegram_feedback_loop():
                     # Telegram expects a JSON-encoded array here, same
                     # reason reply_markup gets json.dumps()'d in notifier.py
                     # — a raw Python list would be form-encoded wrong.
-                    "allowed_updates": json.dumps(["callback_query"]),
+                    "allowed_updates": json.dumps(allowed),
                 },
                 # A bit of slack over Telegram's own long-poll timeout, so
                 # a legitimately slow-but-successful long poll isn't
@@ -813,6 +919,10 @@ def telegram_feedback_loop():
                 callback = update.get("callback_query")
                 if callback:
                     _handle_feedback_callback(callback)
+                    continue
+                message = update.get("message")
+                if message and config.REPLY_ASSISTANT_ENABLED:
+                    _handle_text_message(message)
 
             if updates:
                 _save_telegram_offset(offset)
@@ -828,10 +938,12 @@ def main():
     logger.info("Starting Mostaql AI Freelance Assistant worker (producer/consumer architecture)...")
     logger.info(
         "Match threshold: %s%% | Gemini timeout: %ss | Local RPM cap/key: %s | "
-        "Task queue max size: %s | Score batch size: %s (max wait %ss)",
+        "Task queue max size: %s | Score batch size: %s (max wait %ss) | "
+        "Reply Assistant: %s",
         config.MATCH_THRESHOLD, config.GEMINI_TIMEOUT,
         config.GEMINI_MAX_RPM_PER_KEY, config.TASK_QUEUE_MAXSIZE,
         config.GEMINI_SCORE_BATCH_SIZE, config.GEMINI_BATCH_MAX_WAIT_SECONDS,
+        "enabled" if config.REPLY_ASSISTANT_ENABLED else "disabled",
     )
 
     # Health-check server for Render's Web Service port scan — independent

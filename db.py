@@ -27,6 +27,12 @@ Two separate problems, one fix:
 MongoDB Atlas's free tier solves both: state survives restarts/redeploys
 AND writing to it never touches git, so it can never trigger a deploy.
 
+NOTE ON NEW FIELDS (screening_questions, etc.): queue_pending_project()
+below upserts whatever dict it's given as-is (dict(entry)), with no field
+allowlist — so main.py adding a "screening_questions" key to the queued
+entry, or any other new field, requires NO change here; it's simply
+persisted and read back like every other key already was.
+
 FAIL-SAFE PHILOSOPHY (unchanged from every other tracker in this codebase)
 -------------------------------------------------------------------
 Every public function below catches its own errors and degrades to a

@@ -183,6 +183,14 @@ class Project:
     # extracted from the detail page — see parse_project_duration. None if
     # not found/not stated.
     duration: Optional[str] = None
+    # Explicit client "screening questions" (المتطلبات الإضافية /
+    # أسئلة الفحص) that Mostaql sometimes attaches to a project, requiring
+    # a direct answer alongside the proposal itself — see
+    # parse_screening_questions. Empty list = none found on the detail
+    # page (the common case), NOT "not checked yet"; this is always
+    # populated (or left empty) by the same fetch_project_details() call
+    # that populates tags/client_info/duration.
+    screening_questions: List[str] = field(default_factory=list)
 
 
 def _build_session():
@@ -613,6 +621,198 @@ def parse_project_budget(html: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Screening questions ("أسئلة الفحص" / additional client questions)
+# ---------------------------------------------------------------------------
+# HONESTY NOTE (same caveat as parse_client_info/parse_project_duration
+# above, stated explicitly because it matters more here): Mostaql's exact
+# markup for a project's screening-questions block has NOT been verified
+# against a live page as of this writing — there was no sample HTML to
+# check it against. What's below is a best-effort, MULTI-STRATEGY
+# extractor built the same way the rest of this file handles uncertain
+# markup (see the module docstring's "three independent strategies"
+# section): try a few plausible CSS selectors first, fall back to a
+# heading-anchored text scan if none match, and log loudly with a sample
+# of the page text when NEITHER finds anything — so a wrong guess here
+# fails the same way the original project-card selectors used to (a
+# clear, diagnosable "0 found" log line), not a silent, invisible miss.
+#
+# If your account's real projects show screening questions and this
+# extractor logs "0 questions found" on a project you can see has them,
+# open that project's page, inspect the actual DOM around the questions
+# block, and update SCREENING_SELECTORS / _SCREENING_HEADING_RE below —
+# exactly the same maintenance loop the README already describes for
+# SELECTORS at the top of this file.
+# ---------------------------------------------------------------------------
+
+# Plausible CSS selectors for a screening-questions block/list. Tried in
+# order; the first one that yields ANY list items wins. Update this list
+# once you've inspected real Mostaql markup — these are informed guesses
+# (Mostaql commonly uses a "panel" card with a heading + <ol>/<ul> for this
+# section, based on the general layout pattern used elsewhere on the site),
+# not confirmed selectors.
+SCREENING_SELECTORS = [
+    ".screening-questions li",
+    ".project-questions li",
+    ".additional-questions li",
+    "[class*='screening'] li",
+    "[class*='screening'] p",
+]
+
+# Fallback: find a heading containing one of these Arabic/English labels,
+# then collect list items (or short paragraphs) that immediately follow it
+# in the DOM — robust to an unknown wrapper class name, since it anchors on
+# TEXT rather than markup structure (same philosophy as PROJECT_LINK_RE
+# anchoring on a URL pattern instead of a CSS class).
+_SCREENING_HEADING_RE = re.compile(
+    r"(أسئلة\s*الفحص|أسئلة\s*تأهيل|أسئلة\s*العميل|متطلبات\s*إضافية|"
+    r"screening\s*questions?)",
+    re.IGNORECASE,
+)
+
+# Raw-regex last resort: numbered-question pattern directly in stripped
+# page text (e.g. "1. How do you propose..."), used only if both DOM-based
+# strategies above find nothing. Deliberately conservative (requires a
+# question mark) so it doesn't scoop up unrelated numbered text elsewhere
+# on the page.
+_NUMBERED_QUESTION_RE = re.compile(r"(?:^|\n)\s*\d{1,2}[\.\)]\s*(.+?\?)\s*(?=\n|$)")
+
+
+def _clean_question_text(text: str) -> str:
+    text = " ".join((text or "").split())
+    # Strip a leading "1." / "1)" / "١." numbering if the source markup
+    # already included it as plain text inside the element — keeps the
+    # returned strings uniform whether numbering was visual-only (CSS
+    # counters) or literal text.
+    return re.sub(r"^\s*[\d١٢٣٤٥٦٧٨٩٠]{1,2}[\.\)]\s*", "", text).strip()
+
+
+def _parse_screening_via_css(soup) -> List[str]:
+    for selector in SCREENING_SELECTORS:
+        try:
+            elements = soup.select(selector)
+        except Exception:
+            continue
+        questions = [_clean_question_text(el.get_text(" ", strip=True)) for el in elements]
+        questions = [q for q in questions if q]
+        if questions:
+            return questions
+    return []
+
+
+def _parse_screening_via_heading(soup) -> List[str]:
+    """Finds a heading-like element matching _SCREENING_HEADING_RE, then
+    walks forward through its SIBLINGS collecting <li>/<p> text until
+    hitting the next heading-level element or running out of siblings.
+    Bounded (stops at 20 items or the next heading) so an unrelated match
+    deep in the page can't sweep in unrelated content.
+
+    Checks actual heading tags (h1-h5) FIRST, generic text-carrying tags
+    (strong/b/div/span) only as a fallback — a div/span's get_text()
+    concatenates ALL descendant text (including any list items already
+    inside it), so checking those first risks matching a big wrapper
+    container instead of the actual short heading label, which would then
+    make the "next sibling" walk start from entirely the wrong element.
+    """
+    heading = None
+    for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5"]):
+        text = tag.get_text(" ", strip=True)
+        if text and _SCREENING_HEADING_RE.search(text) and len(text) < 80:
+            heading = tag
+            break
+    if heading is None:
+        for tag in soup.find_all(["strong", "b", "div", "span"]):
+            # get_text(strip=True) on the tag's OWN direct strings only
+            # (no descendants) — avoids the wrapper-container false match
+            # described above; a genuine heading-like label has all its
+            # text directly inside itself, not nested several levels down.
+            own_text = "".join(tag.find_all(string=True, recursive=False)).strip()
+            if own_text and _SCREENING_HEADING_RE.search(own_text) and len(own_text) < 80:
+                heading = tag
+                break
+    if heading is None:
+        return []
+
+    questions: List[str] = []
+    HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5"}
+    for sib in heading.find_all_next():
+        if sib is heading:
+            continue
+        if sib.name in HEADING_TAGS:
+            break  # reached the next section
+        if sib.name in ("li", "p"):
+            text = _clean_question_text(sib.get_text(" ", strip=True))
+            if text and ("?" in text or "؟" in text):
+                questions.append(text)
+        if len(questions) >= 20:
+            break
+    return questions
+
+
+def _parse_screening_via_raw_regex(html: str) -> List[str]:
+    # Insert a newline at block-level/line-break boundaries BEFORE
+    # stripping tags — raw HTML from a real page has no literal newlines
+    # between elements (e.g. "...text<br>1. Question?<br>2. ..."), so
+    # without this the numbered-question regex below (which anchors on
+    # start-of-line) would never match anything real.
+    text = re.sub(r"<(br|/p|/li|/div|/h[1-6])\s*/?>", "\n", html or "", flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_module.unescape(text)
+    matches = _NUMBERED_QUESTION_RE.findall(text)
+    return [_clean_question_text(m) for m in matches if m.strip()][:20]
+
+
+def parse_screening_questions(html: str) -> List[str]:
+    """
+    Best-effort extraction of a project's explicit client screening
+    questions (e.g. "How do you propose to implement this?", "What
+    architecture will you use?") from its detail page, trying three
+    strategies in order of confidence — mirrors parse_projects()'s
+    "richest/most-specific first, most-robust-and-guaranteed last" pattern:
+
+      1. CSS-selector strategy (SCREENING_SELECTORS) — fastest, most
+         precise IF the selectors happen to match real markup.
+      2. Heading-anchored sibling walk — robust to an unknown wrapper
+         class, since it anchors on the section's visible label text
+         instead of a CSS class name.
+      3. Raw numbered-question regex over stripped page text — guaranteed
+         last resort, catches a plain-text "1. ...?" pattern even if
+         BeautifulSoup's tree missed it entirely (same rationale as
+         _parse_via_raw_regex in parse_projects()).
+
+    Returns [] if none find anything — treat that as "no screening
+    questions on this project" (the common case) UNLESS you've manually
+    confirmed via a browser that this specific project DOES show
+    questions, in which case treat it as "selectors need updating" (see
+    this function's section docstring above) and check the DEBUG log for
+    a page-text sample. Never raises.
+    """
+    if not html:
+        return []
+    try:
+        soup = _make_soup(html)
+
+        css_result = _parse_screening_via_css(soup)
+        if css_result:
+            logger.debug("Screening questions found via CSS-selector strategy: %s", len(css_result))
+            return css_result
+
+        heading_result = _parse_screening_via_heading(soup)
+        if heading_result:
+            logger.debug("Screening questions found via heading-anchored strategy: %s", len(heading_result))
+            return heading_result
+
+        regex_result = _parse_screening_via_raw_regex(html)
+        if regex_result:
+            logger.debug("Screening questions found via raw-regex fallback strategy: %s", len(regex_result))
+            return regex_result
+
+        return []
+    except Exception as exc:
+        logger.warning("Screening-question parsing failed (non-fatal): %s", exc)
+        return []
+
+
 def fetch_project_details(session, project: Project) -> None:
     """
     Fetches a single project's own detail page ONCE and populates ALL of
@@ -642,10 +842,12 @@ def fetch_project_details(session, project: Project) -> None:
         project.duration = parse_project_duration(html)
         if not project.budget:
             project.budget = parse_project_budget(html)
+        project.screening_questions = parse_screening_questions(html)
         logger.info(
-            "Project '%s': %s tag(s)=%s | client_warning=%s | duration=%s | budget=%s",
+            "Project '%s': %s tag(s)=%s | client_warning=%s | duration=%s | budget=%s | screening_questions=%s",
             project.title, len(project.tags), project.tags,
             project.client_warning, project.duration, project.budget,
+            len(project.screening_questions),
         )
     except Exception as exc:
         logger.warning("Could not fetch/parse details for %s: %s", project.url, exc)

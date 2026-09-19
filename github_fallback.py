@@ -17,6 +17,14 @@ MongoDB access. If GitHub isn't configured, the bot's actual retry
 mechanism is entirely unaffected — only this secondary human notice is
 skipped (logged as a warning).
 
+NOTE: the Issue/Markdown body format here does NOT currently capture
+screening_questions — see main.py's retry_open_github_issues() docstring
+for the practical implication (a project re-evaluated purely from an
+orphaned GitHub Issue won't have screening-question answers re-drafted,
+even if the original project had some). The MongoDB pending-queue path
+(db.py) does not have this gap, since it stores the full entry dict
+as-is.
+
 Uses only `requests` against the GitHub REST API — no PyGithub/octokit
 dependency needed for the two simple calls this now makes (create an
 Issue / PUT a file).
@@ -78,8 +86,8 @@ FALLBACK_ISSUE_LABEL = "ai-unavailable"
 
 
 def _format_project_markdown(project, reason: str) -> str:
-    """Raw project details as Markdown — used as both the GitHub Issue body
-    and the uploaded .md file's content. Includes everything scraped so a
+    """Raw project details as Markdown — used as both the GitHub Issue
+    body and the uploaded .md file's content. Includes everything scraped so a
     manual proposal can be written from this alone, without going back to
     Mostaql first. Field labels here are matched exactly by parse_issue_body()
     below when reading an issue back for auto re-evaluation — keep them in
@@ -299,4 +307,3 @@ def close_issue(issue_number: int, comment: Optional[str] = None) -> bool:
     except requests.exceptions.RequestException as exc:
         logger.error("Request to close GitHub issue #%s failed: %s", issue_number, exc)
         return False
-

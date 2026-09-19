@@ -1,5 +1,39 @@
 # Mostaql Hybrid AI Freelance Assistant
 
+## New features (Sept 2026)
+
+1. **Automated screening-question answers** — when a project's detail
+   page has explicit client screening questions ("How do you propose to
+   implement this?", "What architecture will you use?"), the bot detects
+   them (`scraper.parse_screening_questions`, a best-effort 3-strategy
+   extractor — see its section docstring for the caveat on unverified
+   CSS selectors), drafts one specific, technically-grounded answer per
+   question (`ai_agent.draft_screening_answers`), and sends them in a
+   dedicated "أسئلة الفحص" section below the proposal, each answer in its
+   own tap-to-copy Telegram code block.
+2. **Strict budget/timeline adherence** — `ai_agent.py`'s scoring prompt
+   now instructs Gemini to use the client's own stated budget/timeline
+   as-is whenever it's a reasonable fit for the scope, and only propose a
+   different figure when the client's number is severely unrealistic (in
+   which case a short justification is shown next to the price/delivery
+   lines in Telegram).
+3. **Reply Assistant** — paste a client's message directly into the bot's
+   Telegram chat (12+ characters, not a `/command`) and it drafts 2-3
+   distinct-tone reply options (brief/direct, detailed/technical,
+   warm/reassuring, or firm-on-scope/flexible depending on the situation)
+   covering both pre-hire negotiation and post-hire project management
+   (milestone delivery, progress updates, scope-creep handling). See
+   `reply_assistant.py`. This runs on the SAME Telegram listener thread as
+   the existing Won/Lost outcome buttons — Telegram allows only one active
+   long-poll connection per bot token, so both are dispatched from one
+   shared `main.telegram_feedback_loop()`.
+
+See `tests/README.md` for the full test coverage table, including the six
+new test files covering all three features above (`test_budget_timeline_
+adherence.py`, `test_screening_questions.py`, `test_scraper_screening_
+questions.py`, `test_reply_assistant.py`, `test_main_reply_assistant.py`,
+`test_notifier_new_features.py`).
+
 ## Stability fix log (silent-hang issue on Render)
 
 If the worker ran for one or two cycles then went quiet with no crash and
@@ -53,16 +87,19 @@ manual submission (human-in-the-loop by design — this bot never auto-submits).
 ## Architecture
 
 ```
-main.py        -> orchestration loop (runs forever, isolates failures)
-scraper.py      -> polls Mostaql's public listing page, anti-ban measures
-ai_agent.py    -> Gemini scoring + Arabic proposal drafting
-notifier.py     -> Telegram Bot API notifications
-config.py       -> all settings/secrets from environment variables
+main.py            -> orchestration loop (runs forever, isolates failures)
+scraper.py          -> polls Mostaql's public listing page, anti-ban measures
+ai_agent.py         -> Gemini scoring, proposal drafting, screening-question answers
+reply_assistant.py  -> Reply Assistant: drafts multi-option replies to pasted client messages
+notifier.py          -> Telegram Bot API notifications
+config.py            -> all settings/secrets from environment variables
+db.py                -> MongoDB Atlas persistence layer
 ```
 
 Flow each cycle: `scraper` finds new projects → `ai_agent` scores each one →
-if score > `MATCH_THRESHOLD`, `ai_agent` drafts a proposal → `notifier` sends
-it to your Telegram → you review and submit manually on Mostaql.
+if score > `MATCH_THRESHOLD`, `ai_agent` drafts a proposal (and screening-
+question answers, if any) → `notifier` sends it to your Telegram → you
+review and submit manually on Mostaql.
 
 ## Before you deploy — important notes
 
@@ -71,7 +108,9 @@ it to your Telegram → you review and submit manually on Mostaql.
   the polling interval conservative (default: random 5–10 min).
 - Mostaql's HTML structure isn't guaranteed to match the selectors in
   `scraper.py` exactly — open the projects page, inspect the DOM, and update
-  the `SELECTORS` dict at the top of `scraper.py` if needed.
+  the `SELECTORS` dict at the top of `scraper.py` if needed. This also
+  applies to `SCREENING_SELECTORS` (see `scraper.py`'s screening-questions
+  section) — those are informed guesses, not confirmed against real markup.
 - This bot **never submits proposals automatically** — Telegram is the final
   human checkpoint, satisfying the "human-in-the-loop" requirement.
 
@@ -197,6 +236,13 @@ cp .env.example .env   # fill in real values
 python main.py
 ```
 
+Run the automated test suite (fully offline, no real API keys needed):
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
 ## Tuning
 
 - `MATCH_THRESHOLD` (default 60) — raise it to be more selective.
@@ -206,3 +252,7 @@ python main.py
   since Mostaql tags/titles use both. Editing this on Render takes effect
   on the next restart — no code change or redeploy needed. Leave unset to
   use the default list built into `config.py`.
+- `REPLY_ASSISTANT_ENABLED` (default true) — disable to turn off the Reply
+  Assistant text-message listener entirely.
+- `REPLY_ASSISTANT_OPTION_COUNT` (default 3) — how many reply drafts to
+  generate per pasted client message.

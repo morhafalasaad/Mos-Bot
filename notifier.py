@@ -14,6 +14,36 @@ Matched-project notifications also include two feedback buttons ("✅ فاز
 telegram_feedback_loop listens for taps on these and records the outcome
 via outcome_tracker.py. This is the only feedback loop in the whole
 pipeline that learns whether a sent proposal actually won real work.
+
+SCREENING QUESTIONS (new)
+-------------------------------------------------------------------
+When a project has explicit client screening questions (see
+scraper.parse_screening_questions / ai_agent.draft_screening_answers),
+build_message() appends a dedicated "أسئلة الفحص" section BELOW the main
+proposal, with each question/answer pair in its OWN separate tap-to-copy
+code block — never merged into one shared block — so a single tap always
+copies exactly one answer, matching however Mostaql's screening-question
+UI actually presents separate text boxes per question.
+
+BUDGET/TIMELINE ADJUSTMENT NOTE (new)
+-------------------------------------------------------------------
+ai_agent.py's scoring call now follows a strict "use the client's own
+stated budget/timeline as-is unless it's severely unrealistic" rule (see
+ProjectScoreSchema). When it DID deviate, evaluation.budget_timeline_note
+carries a short justification — build_message() shows that ONLY when a
+deviation actually happened, right next to the price/delivery lines, so
+the human reviewer immediately understands why the shown figure differs
+from whatever the client asked for, instead of silently mismatching.
+
+REPLY ASSISTANT (new)
+-------------------------------------------------------------------
+build_reply_options_message() formats the output of
+reply_assistant.get_reply_options() for Telegram — one tap-to-copy code
+block PER option, each preceded by its own short tone label, so picking
+and copying a specific option is unambiguous. Sent by main.py's
+telegram_reply_assistant_loop in direct response to a pasted client
+message (a normal text message, not a button tap), separate from every
+other notification flow in this file.
 """
 
 import json
@@ -57,6 +87,45 @@ def _to_code_block(text: str) -> str:
     return f"```\n{safe}\n```"
 
 
+def build_screening_section(screening_answers: list) -> str:
+    """
+    Builds the "أسئلة الفحص" (screening questions) section appended below
+    the main proposal in build_message() — one clearly separated,
+    INDEPENDENTLY tap-to-copy code block per question/answer pair, so a
+    single tap on Telegram always copies exactly one answer and nothing
+    else. Returns "" (nothing appended) if screening_answers is empty,
+    which is the common case (most projects have no screening questions).
+
+    screening_answers is the list of {"question", "answer"} dicts on
+    ai_agent.Evaluation.screening_answers (see
+    ai_agent.draft_screening_answers). Defensive against malformed entries
+    — never raises, silently skips anything that doesn't look right rather
+    than breaking the whole Telegram message over one bad item.
+    """
+    if not screening_answers:
+        return ""
+
+    blocks = []
+    for item in screening_answers:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if not question or not answer:
+            continue
+        blocks.append(
+            f"*{len(blocks) + 1}. {_escape_markdown(question)}*\n{_to_code_block(answer)}"
+        )
+
+    if not blocks:
+        return ""
+
+    return (
+        "\n\n📋 *أسئلة الفحص (اضغط على كل إجابة للنسخ بشكل منفصل):*\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 def build_message(
     title: str,
     url: str,
@@ -69,6 +138,9 @@ def build_message(
     matched_skills: list = None,
     missing_skills: list = None,
     repost_warning: str = None,
+    budget_timeline_adjusted: bool = False,
+    budget_timeline_note: str = None,
+    screening_answers: list = None,
 ) -> str:
     # Placed right under the score, above price/delivery, so it's one of
     # the first things visible — a warning the user has to scroll past
@@ -78,6 +150,14 @@ def build_message(
     price_line = f"\n💵 *السعر المقترح:* {_escape_markdown(str(suggested_price))}" if suggested_price else ""
     days_line = f"\n⏱ *مدة التسليم المتوقعة:* {delivery_days} يوم" if delivery_days else ""
     budget_line = f"\n💰 *ميزانية العميل:* {_escape_markdown(budget)}" if budget else ""
+    # Shown ONLY when ai_agent.py's strict budget/timeline-adherence rule
+    # actually deviated from what the client stated (see
+    # ProjectScoreSchema.budget_timeline_adjusted) — the common case is
+    # this stays empty because the bot committed to the client's own
+    # figures as-is, which needs no extra explanation.
+    adjustment_line = ""
+    if budget_timeline_adjusted and budget_timeline_note:
+        adjustment_line = f"\n⚖️ *تعديل عن طلب العميل:* {_escape_markdown(budget_timeline_note)}"
     # Fast-scan skill breakdown right under the score — lets you gut-check
     # a match without reading the full proposal first. Each list is
     # already capped to a handful of items by the schema (see
@@ -87,6 +167,7 @@ def build_message(
         skills_line += f"\n✅ *مهارات متطابقة:* {_escape_markdown(', '.join(matched_skills))}"
     if missing_skills:
         skills_line += f"\n➕ *مهارات غير متوفرة لديك:* {_escape_markdown(', '.join(missing_skills))}"
+    screening_section = build_screening_section(screening_answers or [])
     return (
         f"🆕 *مشروع جديد مطابق*\n\n"
         f"📌 *العنوان:* {_escape_markdown(title)}\n"
@@ -96,8 +177,10 @@ def build_message(
         f"{warning_line}"
         f"{price_line}"
         f"{days_line}"
-        f"{budget_line}\n\n"
-        f"✍️ *مسودة العرض المقترح (اضغط للنسخ):*\n{_to_code_block(proposal_ar)}\n\n"
+        f"{budget_line}"
+        f"{adjustment_line}\n\n"
+        f"✍️ *مسودة العرض المقترح (اضغط للنسخ):*\n{_to_code_block(proposal_ar)}"
+        f"{screening_section}\n\n"
         f"_راجع العرض ثم استخدم الزر أدناه لفتح المشروع وإرسال العرض يدوياً._"
     )
 
@@ -223,10 +306,16 @@ def notify_matched_project(
     matched_skills: list = None,
     missing_skills: list = None,
     repost_warning: str = None,
+    budget_timeline_adjusted: bool = False,
+    budget_timeline_note: str = None,
+    screening_answers: list = None,
 ):
     message = build_message(
         title, url, score, proposal_ar, budget, suggested_price, delivery_days, client_warning,
         matched_skills, missing_skills, repost_warning,
+        budget_timeline_adjusted=budget_timeline_adjusted,
+        budget_timeline_note=budget_timeline_note,
+        screening_answers=screening_answers,
     )
     send_telegram_message(message, reply_markup=build_inline_keyboard(url, project_id))
 
@@ -235,3 +324,53 @@ def notify_error(context: str, error_message: str):
     """Optional: ping yourself on Telegram if the worker hits repeated failures."""
     text = f"⚠️ *تنبيه خطأ في النظام*\n\nالسياق: {_escape_markdown(context)}\n{_escape_markdown(error_message[:500])}"
     send_telegram_message(text)
+
+
+# ---------------------------------------------------------------------------
+# Reply Assistant formatting (new)
+# ---------------------------------------------------------------------------
+
+def build_reply_options_message(situation_summary: str, options: list) -> str:
+    """
+    Formats reply_assistant.get_reply_options()'s output for Telegram —
+    one clearly labeled, INDEPENDENTLY tap-to-copy code block per option
+    (same "each answer its own block" principle as
+    build_screening_section), so picking and copying exactly one drafted
+    reply is unambiguous even with 3 options in the same message.
+
+    options is a list of {"label", "reply"} dicts. Returns a message
+    explaining no usable draft could be produced if `options` is empty —
+    callers should still send this (rather than nothing) so the human
+    knows the paste was received but drafting failed, instead of silently
+    getting no response at all.
+    """
+    if not options:
+        return (
+            "⚠️ *تعذر توليد ردود مقترحة لهذه الرسالة*\n\n"
+            "حاول لصق نص الرسالة مرة أخرى، أو تأكد أنها رسالة عميل فعلية "
+            "وليست نصاً قصيراً جداً."
+        )
+
+    summary_line = f"🧭 *تحليل الموقف:* {_escape_markdown(situation_summary)}\n\n" if situation_summary else ""
+
+    blocks = []
+    for i, opt in enumerate(options, start=1):
+        label = opt.get("label") or f"خيار {i}"
+        reply = opt.get("reply") or ""
+        blocks.append(f"*الخيار {i} — {_escape_markdown(label)}:*\n{_to_code_block(reply)}")
+
+    return (
+        f"💬 *مساعد الرد على العميل*\n\n"
+        f"{summary_line}"
+        + "\n\n".join(blocks)
+        + "\n\n_اختر الرد الأنسب واضغط عليه للنسخ، ثم أرسله يدوياً على مستقل._"
+    )
+
+
+def send_reply_options(situation_summary: str, options: list) -> bool:
+    """Sends the formatted Reply Assistant message. No inline keyboard —
+    unlike matched-project notifications, there's no per-message follow-up
+    action (open project / record outcome) that applies here; the human's
+    only next step is copying whichever option they pick."""
+    message = build_reply_options_message(situation_summary, options)
+    return send_telegram_message(message)
