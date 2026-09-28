@@ -243,6 +243,42 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+## Python version
+
+This project targets one Python series across CI, Render, and local
+development, tracked in two files that must be kept in sync:
+
+- `runtime.txt` — Render's required filename/format (`python-3.14`, no
+  patch — Render resolves the latest matching patch at deploy time).
+- `.python-version` — the same series in the bare form (`3.14`, no
+  `python-` prefix) that `actions/setup-python` and tools like pyenv/asdf
+  read natively. `.github/workflows/tests.yml` reads this file via
+  `python-version-file` rather than a hardcoded version, so CI always
+  targets the same series Render deploys with, from one edit.
+
+Both intentionally omit the patch version so a runner-image or Render
+base-image update can't break the build the way pinning an exact patch
+did previously (see `.github/workflows/tests.yml`'s own comment for that
+history). Bumping to a new CPython series (e.g. once 3.15 is stable and
+every package in `requirements.txt` supports it) means editing both files
+together and pushing — the GitHub Actions workflow then runs all tests
+against the new version automatically before you'd merge. Dependabot
+(`.github/dependabot.yml`) keeps `requirements.txt`/`requirements-dev.txt`
+current automatically, but does **not** bump the Python version itself —
+no Dependabot ecosystem does that; see `dependabot.yml`'s comment.
+
+**The bump itself IS automated**, just not via Dependabot:
+`.github/workflows/auto-update-python.yml` runs weekly, checks the latest
+*stable* Python series against the same manifest `actions/setup-python`
+itself uses, and opens a PR updating both files when a newer one exists —
+`tests.yml` then runs automatically against that PR. The PR is left for
+manual merge by default rather than auto-merged, since this project's test
+suite (183 tests, all mocked — no real Gemini/Telegram/Mostaql/MongoDB
+calls) can't fully characterize whether a Python series bump is safe in
+production, and `cloudscraper` in particular has had no upstream release
+since April 2023. See that workflow file's own comments for exactly how to
+opt into fully unattended auto-merge if you'd rather accept that tradeoff.
+
 ## Tuning
 
 - `MATCH_THRESHOLD` (default 60) — raise it to be more selective.
@@ -256,3 +292,50 @@ pytest
   Assistant text-message listener entirely.
 - `REPLY_ASSISTANT_OPTION_COUNT` (default 3) — how many reply drafts to
   generate per pasted client message.
+
+### Gemini model cascade & key rotation
+
+`ai_agent.py`'s Gemini calls go through `gemini_client.py` — a fully async,
+quota-aware CASCADE across models and API keys. Every model is tried across
+ALL configured keys (round-robin) before the cascade falls back to the next,
+lower-quota model. Default hierarchy (override with `GEMINI_MODEL_CASCADE`,
+a comma-separated list):
+
+1. **Primary tier** (15 RPM / 500 RPD each): `gemini-3.5-flash-lite`,
+   `gemini-3.1-flash-lite`
+2. **Fallback tier** (5 RPM / 20 RPD each), tried only once every primary
+   key is exhausted: `gemini-3.8-flash` → `gemini-3.7-flash` →
+   `gemini-3.6-flash` → `gemini-3.5-flash` → `gemini-3-flash` →
+   `gemini-2.5-flash-lite`
+
+**Blacklisted models** — `gemini-2-flash`, `gemini-2-flash-lite`,
+`gemini-2.5-pro`, `gemini-3.1-pro`, and `gemini-omni-flash` (0 RPM / 0 RPD,
+deprecated or disabled) can never be configured or routed to. Any of these
+names (or a `-preview`/`-001`/dated-suffix variant of one) supplied via
+`GEMINI_MODEL_CASCADE` or the legacy `GEMINI_MODEL` env var is dropped at
+startup with a logged warning, not silently ignored.
+
+**429 handling**: a per-minute (RPM) 429 rotates to the next API key on the
+*same* model immediately; a per-day (RPD) 429 parks that (model, key) pair
+until the next Pacific-time midnight (when Google resets RPD) and moves on
+to the next model. The two are told apart from Google's own
+`QuotaFailure.violations[].quotaId` in the error body, not by guesswork.
+When every model × key combination is unavailable, the whole cascade is
+retried with bounded exponential backoff before finally raising.
+
+**⚠️ Quotas are per Google Cloud *project*, not per API key.** Several keys
+minted inside the SAME project share one quota pool — rotating between them
+will not avoid a 429. For `GEMINI_API_KEYS` rotation to actually help, each
+key must come from a **different** Google Cloud project (the bot logs a
+reminder about this at startup if only one key, or keys sharing a project,
+are configured).
+
+Related env vars (all optional, sensible defaults in `config.py`):
+`GEMINI_MODEL_CASCADE`, `GEMINI_RPM_FLASH_LITE_35`/`_31`/`_38`/`_37`/`_36`/
+`_35`/`_3`/`_LITE_25`, `GEMINI_RPD_FLASH_*` (same suffixes), `GEMINI_MAX_RPM_PER_KEY`,
+`GEMINI_BACKOFF_SWEEPS`, `GEMINI_OUTER_BACKOFF_BASE`/`_CAP`,
+`GEMINI_TOTAL_DEADLINE_SECONDS`, `GEMINI_MAX_TRANSIENT_RETRIES`,
+`GEMINI_RETRY_BACKOFF_BASE`, `GEMINI_QUOTA_BACKOFF_MAX`,
+`GEMINI_INTER_REQUEST_DELAY`. `GEMINI_MODEL` (legacy, single-model) is still
+honored as a back-compat shim: if set, it's inserted at the front of the
+cascade ahead of even the primary tier.

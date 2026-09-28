@@ -7,7 +7,43 @@ Uses Google's Gen AI SDK (`from google import genai`) to:
   2. If the score clears the threshold, draft a persuasive, customized
      proposal in Arabic based on the project's details.
 
-Three reliability features on top of that:
+QUOTA-AWARE MODEL CASCADE + KEY ROTATION
+-------------------------------------------------------------------
+The actual Gemini call plumbing (model hierarchy, RPM/RPD-aware 429
+handling, round-robin key rotation, exponential backoff) lives in
+`gemini_client.py` as a small, fully async, framework-free module — see
+its docstring for the complete design. In short:
+
+  * MODEL-MAJOR cascade: every key is tried on the current (highest-
+    quota) model before moving to the next model, so a high-RPM/RPD
+    model is drained across ALL keys before a scarcer one is ever
+    touched. Order: config.GEMINI_MODEL_CASCADE (default: the two
+    high-quota "-lite" models, then six low-quota fallbacks).
+  * Blacklisted (0 RPM / 0 RPD, deprecated/disabled) models can never be
+    configured or routed to — enforced in gemini_client.build_cascade()/
+    is_blacklisted(), independent of what a stale env var might contain.
+  * An HTTP 429 is classified as RPM or RPD from Google's own
+    `QuotaFailure.violations[].quotaId` (NOT from the retryDelay hint,
+    which does not distinguish the two): an RPM 429 rotates to the next
+    key on the SAME model; an RPD 429 parks that (model, key) until the
+    next Pacific-time midnight (when Google resets RPD) and moves on.
+  * When every (model, key) pair is unavailable, the whole cascade is
+    retried with exponential backoff (bounded number of sweeps, jitter,
+    a hard overall deadline) before raising.
+
+SYNC-OVER-ASYNC BRIDGE
+-------------------------------------------------------------------
+gemini_client.GeminiCascadeClient is `async`. The rest of this codebase
+(main.py's producer/consumer threads, reply_assistant.py, etc.) is
+synchronous. `_generate()` below is the same synchronous entry point
+every caller already uses; internally it schedules the async call onto
+ONE dedicated background event-loop thread (`_ASYNC_LOOP`) and blocks the
+calling thread on the result — preserving both "only one Gemini call in
+flight process-wide" (the old global mutex's guarantee) and every
+existing caller's synchronous call signature, so score_project(),
+draft_proposal(), draft_screening_answers(), and
+reply_assistant.get_reply_options() needed NO changes beyond importing
+this module.
 
 LOCAL TAG PRE-FILTERING (zero API cost for irrelevant projects)
 -------------------------------------------------------------------
@@ -26,42 +62,19 @@ the pre-filter does NOT block the project; it falls through to the normal
 Gemini evaluation. We would rather spend an API call on an uncertain
 project than silently drop a good one because of a scraping gap.
 
-API KEY ROTATION (survive per-key free-tier quota limits)
--------------------------------------------------------------------
-`config.GEMINI_API_KEYS` is a list. On a 429 / RESOURCE_EXHAUSTED quota
-error, `_generate()` immediately rotates to the next key, rebuilds the
-client, and retries — no backoff wait, since a different key's quota is
-unrelated to how long we wait on this one.
+Any error _generate() raises (QuotaExhaustedError, a non-retryable API
+error, or the sync bridge's own errors) is caught by score_project()/
+draft_proposal() via their existing broad `except Exception` and turned
+into `None`, which evaluate_project() turns into a safe fallback
+Evaluation (match_score=0.0, suggested_price=None, delivery_days=None)
+rather than letting the exception propagate — so one bad project can
+never take down main.py's loop.
 
-TRANSIENT-ERROR RETRY (504 Gateway Timeout / DEADLINE_EXCEEDED / 503)
--------------------------------------------------------------------
-These are different from quota errors: switching keys doesn't fix a
-timed-out gateway, so `_generate()` instead retries the SAME key with
-short exponential backoff, up to config.GEMINI_MAX_TRANSIENT_RETRIES times,
-before giving up on that key and (only then) also rotating to the next key
-as a last resort. Any error that is neither a quota error nor a recognized
-transient error is raised immediately without retrying or rotating, so a
-genuinely broken prompt/request doesn't waste time or keys.
-
-Both retry paths are bounded (at most n_keys * (1 + max_transient_retries)
-attempts total), so `_generate()` always eventually returns or raises —
-it cannot loop forever. score_project()/draft_proposal() catch whatever it
-raises and return None, and evaluate_project() turns that into a safe
-fallback Evaluation (match_score=0.0, suggested_price=None,
-delivery_days=None) rather than letting the exception propagate — so one
-bad project can never take down main.py's loop.
-
-SDK NOTE: single stable model (config.GEMINI_MODEL, default
-"gemini-3.5-flash"), no model fallback chain, per current requirements.
-
-TIMEOUT CAVEAT: google-genai's http_options timeout has known upstream
-reliability issues (requests can occasionally hang despite a timeout being
-set — see googleapis/python-genai#1893, #911). We still set it below as a
-first line of defense, but the real guarantee against a permanent hang is
-main.py's CYCLE_TIMEOUT watchdog (ThreadPoolExecutor + future.result
-timeout), which is untouched by this file and must stay in place.
+SDK NOTE: model selection is now the full quota-aware cascade described
+above (config.GEMINI_MODEL_CASCADE), not a single fixed model.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -73,17 +86,15 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from google import genai
 from google.genai import types
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 import config
 import db
+import gemini_client
+from gemini_client import (
+    AllKeysExhaustedError,  # noqa: F401  (back-compat alias, see below)
+    AllKeysRateLimited,     # noqa: F401  (back-compat alias, see below)
+)
 
 # Optional final-fallback for genuinely malformed JSON (e.g. a stray/garbled
 # token where a value should be — corruption beyond what regex cleanup can
@@ -100,186 +111,33 @@ except ImportError:
 logger = logging.getLogger("ai_agent")
 
 
-class AllKeysRateLimited(Exception):
-    """
-    Raised by _generate() when EVERY configured key is already at its local
-    rate-limit cap (config.GEMINI_MAX_RPM_PER_KEY requests in the last 60s)
-    — meaning _generate() bypassed the Gemini API entirely and made ZERO
-    network calls for this attempt. This is the PROACTIVE counterpart to a
-    real 429: instead of firing a request we already know will likely be
-    rejected (or, worse, one that pushes Google's own rate limiter into
-    penalizing us further), we skip it and let the caller fall back
-    immediately. score_project()/draft_proposal() catch this via their
-    existing broad `except Exception`, so no special handling is required
-    there — it flows into Evaluation(ai_failed=True) exactly like a real
-    API failure would.
-    """
-    pass
-
-
-class AllKeysExhaustedError(RuntimeError):
-    """
-    Raised by _generate() when at least one (key, model) attempt was
-    actually made — as opposed to AllKeysRateLimited, where none were —
-    and every single one of them failed with a real error (429, transient,
-    or otherwise). Distinct from AllKeysRateLimited so logs/callers can
-    tell "we never even tried, everything was locally rate-limited" apart
-    from "we tried the entire fallback chain and it all genuinely failed".
-    The original underlying exception is chained via `__cause__` (see
-    `raise ... from last_exc`), so nothing about the root cause is lost.
-    """
-    pass
-
-
-# Global mutex: guarantees only ONE Gemini API call is ever in flight at a
-# time, process-wide, regardless of which thread calls _generate() — not
-# just relying on "only the consumer thread happens to call this today".
-# Cheap (the critical section is bounded by the same per-task watchdog
-# main.py already enforces) and directly prevents concurrent callers from
-# multiplying instantaneous demand against the RPM limits, which is the
-# actual failure mode a race between multiple callers would produce.
-_generate_lock = threading.Lock()
-
-
-class KeyRateLimiter:
-    """
-    In-memory sliding-window rate tracker. Originally one window per API
-    key index; now generalized to track ANY hashable "bucket" — in
-    practice a (key_index, model_name) tuple, since Gemini's actual RPM
-    quotas are per-model, not shared across every model used under one
-    key. Enforces a hard cap of `max_per_minute` requests (default, or an
-    explicit per-call override) in any trailing 60-second window —
-    proactively, BEFORE a request is sent, rather than reactively after
-    Google returns a 429.
-
-    Thread-safety: in this codebase _generate() is only ever called from
-    the single consumer thread (see main.py's producer/consumer split), so
-    a lock isn't strictly required for correctness today — but it's kept
-    here anyway since this class represents shared mutable state and the
-    cost of the lock is negligible, in case that assumption ever changes.
-    """
-
-    def __init__(self, default_max_per_minute: int):
-        self.default_max_per_minute = default_max_per_minute
-        self._timestamps: dict = {}  # bucket_key -> [timestamp, ...]
-        self._lock = threading.Lock()
-
-    def _prune_locked(self, bucket_key, now: float) -> list:
-        """Must be called while holding self._lock. Drops timestamps older
-        than the 60s window and returns the (mutated in place) list."""
-        window_start = now - 60.0
-        ts = self._timestamps.setdefault(bucket_key, [])
-        while ts and ts[0] < window_start:
-            ts.pop(0)
-        return ts
-
-    def available(self, bucket_key, max_per_minute: int = None) -> bool:
-        """True if this bucket has capacity for at least one more request
-        right now (fewer than max_per_minute requests in the last 60s)."""
-        cap = max_per_minute if max_per_minute is not None else self.default_max_per_minute
-        with self._lock:
-            ts = self._prune_locked(bucket_key, time.time())
-            return len(ts) < cap
-
-    def record(self, bucket_key) -> None:
-        """Records a request attempt against this bucket's window. Call
-        this immediately before actually making the API call (not after),
-        so capacity is reserved even if the call is still in flight."""
-        with self._lock:
-            ts = self._prune_locked(bucket_key, time.time())
-            ts.append(time.time())
-
-    def remaining(self, bucket_key, max_per_minute: int = None) -> int:
-        """How many more requests this bucket can make right now before
-        hitting the cap. Useful for logging/diagnostics."""
-        cap = max_per_minute if max_per_minute is not None else self.default_max_per_minute
-        with self._lock:
-            ts = self._prune_locked(bucket_key, time.time())
-            return max(0, cap - len(ts))
-
-
-# Default cap (used when a model isn't listed in config.MODEL_RPM_LIMITS).
-# Hard cap of 14 req/60s per key (free tier is 15 RPM — staying one under
-# leaves headroom for clock/measurement drift between our tracker and
-# Google's). Override via GEMINI_MAX_RPM_PER_KEY if your tier differs.
-_rate_limiter = KeyRateLimiter(config.GEMINI_MAX_RPM_PER_KEY)
-
-
-def _model_rpm_cap(model: str) -> int:
-    """The local rate-limit cap to apply for this specific model — from
-    config.MODEL_RPM_LIMITS if listed, else the global default."""
-    return config.MODEL_RPM_LIMITS.get(model, config.GEMINI_MAX_RPM_PER_KEY)
-
-
 # ---------------------------------------------------------------------------
-# Client + API key rotation
+# Async cascade client + the sync bridge every existing caller uses
 # ---------------------------------------------------------------------------
-# Module-level state is safe without locking because main.py runs cycles one
-# at a time on a single worker thread (ThreadPoolExecutor(max_workers=1)).
-_current_key_index = 0
-
-if len(config.GEMINI_API_KEYS) > 1:
-    logger.info(
-        "Gemini: %s API key(s) configured for rotation on quota exhaustion.",
-        len(config.GEMINI_API_KEYS),
-    )
-else:
-    logger.warning(
-        "Gemini: only 1 API key configured — GEMINI_API_KEYS is not set (or "
-        "only contains one entry), so there is nothing to rotate to on a 429. "
-        "Set GEMINI_API_KEYS as a comma-separated list of keys FROM DIFFERENT "
-        "GOOGLE CLOUD PROJECTS to actually get separate quota pools — keys "
-        "created under the same project can share the same underlying quota, "
-        "in which case rotating between them will not avoid 429s either."
-    )
-
-
-def _build_client(key_index: int) -> genai.Client:
-    http_options_kwargs = dict(
-        # timeout is in MILLISECONDS for this SDK.
-        timeout=config.GEMINI_TIMEOUT * 1000,
-        # CRITICAL: the SDK's own default retry behavior is up to 5
-        # attempts with exponential backoff (up to ~60s), and 429 is in
-        # its default retryable status list. Left at the default, a
-        # single generate_content() call would silently retry the SAME
-        # already-exhausted key up to 5 times internally — taking up to
-        # ~a minute — before our exception handler in _generate() ever
-        # sees it and gets a chance to rotate to the next key. Setting
-        # attempts=1 disables the SDK's internal retry entirely, so a
-        # 429 raises immediately and OUR rotation logic (which is what
-        # actually knows about the other keys) takes over right away.
-        retry_options=types.HttpRetryOptions(attempts=1),
-    )
-
-    if config.GEMINI_PROXY_URL:
-        # Scoped to ONLY this genai.Client's underlying httpx.Client —
-        # scraper.py's cloudscraper/requests session and notifier.py's/
-        # github_fallback.py's plain `requests` calls are entirely separate
-        # HTTP stacks and never see this proxy. That separation is the
-        # whole point: Gemini may require a supported-region IP while
-        # Mostaql's Cloudflare WAF flags/blocks that same proxy IP as
-        # datacenter/VPN traffic, so only Gemini's traffic goes through it.
-        http_options_kwargs["client_args"] = {"proxy": config.GEMINI_PROXY_URL}
-
-    return genai.Client(
-        api_key=config.GEMINI_API_KEYS[key_index],
-        http_options=types.HttpOptions(**http_options_kwargs),
-    )
-
-
-def _build_client_safe(key_index: int) -> Optional[genai.Client]:
-    """Same as _build_client, but never raises — used when rotating to a
-    new key mid-retry-loop, since a single malformed/invalid key in the
-    list must not abort rotation to the REST of the list."""
-    try:
-        return _build_client(key_index)
-    except Exception as exc:
-        logger.error(
-            "Failed to build Gemini client for key #%s (is it malformed?): %s",
-            key_index + 1, exc,
-        )
-        return None
-
+# One GeminiCascadeClient per process, built from config.py's key list and
+# cascade. See gemini_client.py's module docstring for the full design
+# (model-major cascade, RPM-vs-RPD-aware 429 handling, round-robin key
+# rotation, bounded exponential backoff).
+_cascade_client = gemini_client.GeminiCascadeClient(
+    api_keys=config.GEMINI_API_KEYS,
+    cascade=gemini_client.build_cascade(
+        overrides=config.GEMINI_MODEL_CASCADE,
+        rpm_overrides=config.MODEL_RPM_LIMITS,
+        rpd_overrides=getattr(config, "MODEL_RPD_LIMITS", None),
+    ),
+    timeout_seconds=config.GEMINI_TIMEOUT,
+    proxy_url=config.GEMINI_PROXY_URL,
+    tunables=gemini_client._Tunables(
+        transient_retries=config.GEMINI_MAX_TRANSIENT_RETRIES,
+        transient_backoff_base=config.GEMINI_RETRY_BACKOFF_BASE,
+        transient_backoff_cap=config.GEMINI_QUOTA_BACKOFF_MAX,
+        inter_request_delay=config.GEMINI_INTER_REQUEST_DELAY,
+        backoff_sweeps=getattr(config, "GEMINI_BACKOFF_SWEEPS", 3),
+        backoff_base=getattr(config, "GEMINI_OUTER_BACKOFF_BASE", 2.0),
+        backoff_cap=getattr(config, "GEMINI_OUTER_BACKOFF_CAP", 60.0),
+        total_deadline=getattr(config, "GEMINI_TOTAL_DEADLINE_SECONDS", 180.0),
+    ),
+)
 
 if config.GEMINI_PROXY_URL:
     logger.info(
@@ -288,40 +146,145 @@ if config.GEMINI_PROXY_URL:
         config.GEMINI_PROXY_URL,
     )
 
-_client = _build_client(_current_key_index)
 
-
-def _is_quota_error(exc: Exception) -> bool:
-    """Detects a 429 / RESOURCE_EXHAUSTED quota error across SDK versions,
-    since relying on a single exception type/attribute is fragile."""
-    code = getattr(exc, "code", None)
-    if code == 429:
-        return True
-    text = str(exc)
-    return "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower()
-
-
-def _is_transient_error(exc: Exception) -> bool:
+class _AsyncLoopThread:
     """
-    Detects gateway/server-side transient errors — 504 Gateway Timeout,
-    DEADLINE_EXCEEDED, 503 Service Unavailable, and generic 500s — which are
-    worth retrying on the SAME key after a short backoff (unlike quota
-    errors, a different key doesn't fix a timed-out gateway).
+    Owns ONE background thread running ONE asyncio event loop for the
+    lifetime of the process. `run()` schedules a coroutine onto that loop
+    from any synchronous caller and blocks until it completes — this is
+    what lets every existing synchronous call site (score_project(),
+    draft_proposal(), reply_assistant.get_reply_options(), ...) call
+    `_generate()` exactly as before, with no `async`/`await` of their own,
+    while the real Gemini call happens through gemini_client's async
+    cascade engine.
+
+    Using a single loop (rather than a fresh `asyncio.run()` per call)
+    also means only one Gemini call is ever in flight at a time,
+    process-wide — the same guarantee the old global `_generate_lock`
+    provided — since main.py's producer/consumer architecture already
+    only calls this from one thread at a time, and every call funnels
+    through this one loop regardless of which OS thread issued it.
     """
-    code = getattr(exc, "code", None)
-    if code in (500, 502, 503, 504):
-        return True
-    text = str(exc)
-    markers = (
-        "504", "DEADLINE_EXCEEDED", "Gateway Timeout",
-        "503", "UNAVAILABLE", "Service Unavailable",
-        "500", "Internal error", "Server disconnected",
-    )
-    return any(marker.lower() in text.lower() for marker in markers)
+
+    def __init__(self):
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run_loop_forever, name="gemini-asyncio", daemon=True
+        )
+        self._thread.start()
+        self._ready.wait(timeout=10)
+
+    def _run_loop_forever(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+
+    def run(self, coro):
+        """Blocks the CALLING (synchronous) thread until `coro` completes
+        on the dedicated event loop, returning its result or re-raising
+        its exception unchanged."""
+        if self._loop is None:
+            raise RuntimeError("Gemini async event loop failed to start")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+
+_ASYNC_LOOP = _AsyncLoopThread()
+
+
+def _generate(
+    prompt: str,
+    json_mode: bool = False,
+    response_schema=None,
+    temperature: float = None,
+    max_output_tokens: int = None,
+):
+    """
+    Synchronous entry point used by every caller in this codebase
+    (score_project, score_projects_batch, draft_proposal,
+    draft_screening_answers, reply_assistant.get_reply_options). Builds
+    the GenerateContentConfig, runs the async cascade
+    (gemini_client.GeminiCascadeClient.generate) on the dedicated event
+    loop via `_ASYNC_LOOP.run()`, updates the daily-request counter and
+    "which key served this" bookkeeping on success, and returns the raw
+    SDK response object — exactly the same shape/contract the previous
+    implementation returned, so every downstream `.parsed` / `.text` /
+    `.usage_metadata` access below is unaffected.
+
+    Raises gemini_client.QuotaExhaustedError when the entire model x key
+    grid is exhausted (kept importable here as AllKeysExhaustedError for
+    backward compatibility with existing call sites/tests that reference
+    ai_agent.AllKeysExhaustedError), or the original non-retryable
+    exception for anything else (bad request, auth failure, safety
+    block, ...).
+    """
+    global _current_key_index, _current_model
+
+    gen_config_kwargs = {
+        # Explicit, visible guarantee: this codebase never passes `tools=`
+        # to Gemini, so Automatic Function Calling cannot trigger today
+        # regardless — disabling it here makes that guarantee visible
+        # rather than implicit, so a future change can't silently
+        # introduce hidden remote calls without this line having to
+        # change too.
+        "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
+    }
+    # response_schema requires response_mime_type="application/json" to be
+    # set too (the SDK validates this) — implied automatically here so
+    # callers only need to pass response_schema, not both.
+    if json_mode or response_schema is not None:
+        gen_config_kwargs["response_mime_type"] = "application/json"
+    if response_schema is not None:
+        gen_config_kwargs["response_schema"] = response_schema
+    if temperature is not None:
+        gen_config_kwargs["temperature"] = temperature
+    if max_output_tokens is not None:
+        gen_config_kwargs["max_output_tokens"] = max_output_tokens
+    gen_config = types.GenerateContentConfig(**gen_config_kwargs)
+
+    result = _ASYNC_LOOP.run(_cascade_client.generate(prompt, gen_config))
+
+    # Only a genuinely successful call counts toward RPD — see
+    # DailyRequestTracker's docstring for why failed attempts are
+    # deliberately excluded.
+    _daily_request_tracker.increment()
+    _current_key_index = result.key_index
+    _current_model = result.model
+    return result.response
+
+
+def generate_with_outer_backoff(prompt: str, **kwargs):
+    """
+    Thin compatibility wrapper: the cascade client ALREADY performs bounded
+    exponential backoff internally across full model x key sweeps (see
+    gemini_client.GeminiCascadeClient.generate) before ever raising
+    QuotaExhaustedError, so there is no additional outer retry to add here
+    — this simply calls `_generate()`. Kept as a distinct name because
+    existing code/tests may reference `ai_agent.generate_with_outer_backoff`
+    directly.
+    """
+    return _generate(prompt, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Back-compat state mirrors
+# ---------------------------------------------------------------------------
+# A few call sites (record_token_usage, health_server, tests) read these
+# module-level globals directly to report "which key/model served the last
+# call" — kept as plain attributes updated by _generate() above, rather
+# than reaching into the cascade client's internals, so that surface is
+# unaffected by this rewrite.
+_current_key_index = 0
+_current_model: Optional[str] = None
 
 
 @dataclass
 class Evaluation:
+    """Container for one project's full AI evaluation outcome — filled in
+    by evaluate_project()/evaluate_projects_batch() and consumed by
+    main.py to decide whether to notify, draft, or queue for retry."""
     match_score: float
     reasoning: str
     suggested_price: Optional[str] = None
@@ -378,357 +341,6 @@ class Evaluation:
     # drafting answers for them failed (never raises; degrades to []
     # rather than blocking the rest of the proposal).
     screening_answers: List[dict] = field(default_factory=list)
-
-
-def _extract_retry_delay_seconds(exc: Exception) -> Optional[float]:
-    """
-    Reads Google's own suggested wait time out of a 429 error's response
-    body (a google.rpc.RetryInfo detail with a retryDelay like '13s'), when
-    present, so _generate() can respect the server's actual guidance
-    instead of guessing blindly with pure exponential backoff. Returns None
-    if not present or not parseable — never raises.
-    """
-    details = getattr(exc, "details", None)
-    if not isinstance(details, dict):
-        return None
-    try:
-        error_body = details.get("error", details)
-        for item in error_body.get("details", []) or []:
-            if isinstance(item, dict) and "RetryInfo" in str(item.get("@type", "")):
-                match = re.match(r"([\d.]+)\s*s", str(item.get("retryDelay", "")))
-                if match:
-                    return float(match.group(1))
-    except (AttributeError, TypeError):
-        pass
-    return None
-
-
-class _KeyLocallyRateLimited(Exception):
-    """
-    Internal marker: raised by _call_gemini_once() when the LOCAL rate
-    limiter says this key has no capacity right this instant — e.g. a
-    burst of tenacity's own transient-error retries pushed it over the cap
-    mid-attempt, not just across separate calls. Deliberately excluded from
-    _is_tenacity_retryable() so tenacity stops immediately rather than
-    retrying against a key we already know is at its local cap; _generate()
-    catches this specifically to move on to the next candidate key.
-    """
-    pass
-
-
-def _is_tenacity_retryable(exc: BaseException) -> bool:
-    """
-    The retry PREDICATE tenacity uses to decide whether to retry at all.
-    This is where requirement #1 actually lives: 429/RESOURCE_EXHAUSTED is
-    explicitly excluded here, so tenacity NEVER retries a quota error —
-    it's caught, logged, and routed to our own key-rotation/cooldown logic
-    in _generate() on the very first occurrence, with zero extra requests
-    burned trying the same exhausted key again. Only genuine
-    transient/network-level errors (5xx, timeouts) are retryable.
-    """
-    if isinstance(exc, _KeyLocallyRateLimited):
-        return False
-    if _is_quota_error(exc):
-        return False
-    return _is_transient_error(exc)
-
-
-@retry(
-    retry=retry_if_exception(_is_tenacity_retryable),
-    # +1 because stop_after_attempt counts the FIRST attempt too —
-    # GEMINI_MAX_TRANSIENT_RETRIES retries after that, so e.g. a default of
-    # 2 means 3 total attempts against this one key for a transient error,
-    # matching "a maximum of 2 or 3 attempts."
-    stop=stop_after_attempt(config.GEMINI_MAX_TRANSIENT_RETRIES + 1),
-    wait=wait_exponential(
-        multiplier=config.GEMINI_RETRY_BACKOFF_BASE,
-        max=config.GEMINI_QUOTA_BACKOFF_MAX,
-    ),
-    reraise=True,  # re-raise the ORIGINAL exception, not tenacity's own RetryError wrapper
-)
-def _call_gemini_once(key_index: int, model: str, prompt: str, gen_config):
-    """
-    Exactly ONE logical Gemini call attempt against `key_index`'s client,
-    for the given `model`. Rate-limit capacity is tracked per (key, model)
-    pair — not per key alone — since Gemini's actual RPM quotas are
-    per-model, not shared across every model callable under one key.
-    tenacity re-invokes this whole function (including the rate-limiter
-    check and record() below) on each retry, but ONLY for transient errors
-    (see _is_tenacity_retryable). A 429 raised from here propagates
-    immediately, unretried, straight out of the @retry decorator.
-    """
-    bucket = (key_index, model)
-    cap = _model_rpm_cap(model)
-    if not _rate_limiter.available(bucket, max_per_minute=cap):
-        raise _KeyLocallyRateLimited(
-            f"Key #{key_index + 1} has no local rate-limit capacity remaining for model '{model}'"
-        )
-    _rate_limiter.record(bucket)  # reserve capacity before sending
-    return _client.models.generate_content(model=model, contents=prompt, config=gen_config)
-
-
-def _generate(
-    prompt: str,
-    json_mode: bool = False,
-    response_schema=None,
-    temperature: float = None,
-    max_output_tokens: int = None,
-):
-    """
-    Immediate fallback chain (Key -> its models, RPM-descending) with a
-    single global mutex and light inter-request throttling, plus PROACTIVE
-    rate-limit avoidance — retry responsibilities cleanly split between
-    tenacity and our own code:
-
-    0. FALLBACK CHAIN ORDER: Key #1 first, ALL of its models tried
-       (config.GEMINI_MODEL_CASCADE, highest-RPM first) before EVER moving
-       to Key #2 — Key #1 is exhausted (every model, every real error)
-       before Key #2 is touched at all. Within a key, a 429 on one model
-       does NOT retry that model locally at all — it immediately moves to
-       the next model in the cascade. No same-key/same-model wait-and-
-       retry on quota errors, by design: waiting out an RPM window blocks
-       whichever thread is running this, and moving on immediately is
-       almost always faster than waiting for one specific bucket to reset
-       when other buckets may already have room.
-    1. PROACTIVE: for each key, computes which of ITS models currently
-       have LOCAL rate-limit capacity (see KeyRateLimiter — tracked per
-       (key, model) pair, since RPM quotas are per-model on Gemini, not
-       shared across models under one key) before attempting anything.
-       Models with no local room are skipped with zero API calls, not
-       attempted-and-rejected.
-    2. Per (key, model) pair, _call_gemini_once() is wrapped in @retry from
-       tenacity — but its retry PREDICATE (_is_tenacity_retryable)
-       explicitly excludes 429/RESOURCE_EXHAUSTED, so tenacity ONLY ever
-       retries genuine transient/network errors (504/DEADLINE_EXCEEDED/
-       503/500 — this also covers ReadTimeouts, which the SDK surfaces as
-       connection/deadline errors, not quota errors), with exponential
-       backoff, capped at GEMINI_MAX_TRANSIENT_RETRIES + 1 total attempts
-       (default 3) against that one pair. A 429 always propagates out of
-       tenacity immediately, unretried.
-    3. GLOBAL MUTEX (_generate_lock): only one Gemini call is ever in
-       flight process-wide, so concurrent callers (if this codebase is
-       ever changed to have more than one) can't multiply instantaneous
-       demand against the RPM limits. LIGHT THROTTLING
-       (config.GEMINI_INTER_REQUEST_DELAY, default 1s) is applied between
-       consecutive attempts within one _generate() call — small on
-       purpose, meant to space out a burst of backlog items being drained
-       in quick succession, not to wait out a rate-limit window.
-    4. AUTOMATIC FUNCTION CALLING is explicitly disabled on every request
-       (automatic_function_calling=AutomaticFunctionCallingConfig(disable=True)).
-       This codebase never passes `tools=` to Gemini, so AFC cannot
-       actually trigger today regardless — this is an explicit, visible
-       guarantee rather than an implicit "well, we just never call it that
-       way" one, so a future change can't accidentally introduce hidden
-       remote calls without this line having to change too.
-
-    Terminal conditions — TWO distinct outcomes, deliberately different
-    exceptions:
-      - AllKeysRateLimited: NO (key, model) pair anywhere had local
-        capacity — zero Gemini API calls were made at all this call.
-      - AllKeysExhaustedError("ALL_KEYS_EXHAUSTED"): at least one call was
-        actually attempted, and every attempted (key, model) pair failed
-        with a real error. The original exception is chained via `from
-        last_exc` so the root cause is never lost.
-    Either way, callers (score_project/draft_proposal) catch it via their
-    existing broad `except Exception` and return None, which
-    evaluate_project() turns into Evaluation(ai_failed=True) — the one and
-    only point where main.py's GitHub fallback (Telegram alert +
-    persistent GitHub-hosted queue) gets triggered. That queue is ALSO
-    where the "give the RPM window time to reset, then retry" behavior
-    actually lives (main.py's consumer_loop periodically re-attempts
-    queued items — see retry_pending_queue) — deliberately NOT
-    implemented as a blocking sleep-and-retry inside this function, since
-    that would freeze the one thread responsible for draining the rest of
-    the backlog for the full wait duration. See generate_with_outer_backoff()
-    below for the literal blocking-retry version, kept available but not
-    wired into the default pipeline for that reason.
-    """
-    global _client, _current_key_index
-
-    gen_config_kwargs = {
-        # Explicit, visible guarantee — see docstring point 4 above.
-        "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
-    }
-    # response_schema requires response_mime_type="application/json" to be
-    # set too (the SDK validates this — see types.GenerateContentConfig's
-    # own field description) — implied automatically here so callers only
-    # need to pass response_schema, not both.
-    if json_mode or response_schema is not None:
-        gen_config_kwargs["response_mime_type"] = "application/json"
-    if response_schema is not None:
-        gen_config_kwargs["response_schema"] = response_schema
-    if temperature is not None:
-        gen_config_kwargs["temperature"] = temperature
-    if max_output_tokens is not None:
-        gen_config_kwargs["max_output_tokens"] = max_output_tokens
-    gen_config = types.GenerateContentConfig(**gen_config_kwargs)
-    n_keys = len(config.GEMINI_API_KEYS)
-
-    with _generate_lock:
-        last_exc: Optional[Exception] = None
-        any_capacity_found = False  # True once ANY (key, model) pair ever had local rate-limit room
-        attempted_any_call = False  # gates the inter-request throttle (never sleeps before the first attempt)
-
-        # Key #1 first, wrapping from the current key so a previously-
-        # successful key stays "sticky" across calls rather than always
-        # restarting at index 0.
-        key_order = [(_current_key_index + offset) % n_keys for offset in range(n_keys)]
-
-        for key_index in key_order:
-            if key_index != _current_key_index or _client is None:
-                candidate_client = _build_client_safe(key_index)
-                if candidate_client is None:
-                    logger.warning("Key #%s could not be initialized — skipping to next key", key_index + 1)
-                    continue  # malformed key — skip this whole key
-                _current_key_index = key_index
-                _client = candidate_client
-
-            key_had_capacity = False
-
-            for model in config.GEMINI_MODEL_CASCADE:
-                model_cap = _model_rpm_cap(model)
-                if not _rate_limiter.available((key_index, model), max_per_minute=model_cap):
-                    logger.debug(
-                        "Key #%s / model '%s': no local rate-limit capacity "
-                        "(%s req/60s cap) — skipping to next model",
-                        key_index + 1, model, model_cap,
-                    )
-                    continue
-
-                any_capacity_found = True
-                key_had_capacity = True
-
-                if attempted_any_call:
-                    time.sleep(config.GEMINI_INTER_REQUEST_DELAY)  # light throttling, not a rate-limit-recovery wait
-                attempted_any_call = True
-
-                logger.debug(
-                    "Using Gemini key #%s with model '%s' (%s req remaining in its local window)",
-                    key_index + 1, model, _rate_limiter.remaining((key_index, model), max_per_minute=model_cap),
-                )
-
-                try:
-                    result = _call_gemini_once(key_index, model, prompt, gen_config)
-                except _KeyLocallyRateLimited:
-                    logger.debug(
-                        "Key #%s ran out of local rate-limit capacity for "
-                        "model '%s' mid-attempt — moving to the next model",
-                        key_index + 1, model,
-                    )
-                    continue
-                except Exception as exc:
-                    last_exc = exc
-
-                    if _is_quota_error(exc):
-                        # Real 429, immediately propagated by tenacity (never
-                        # retried by it). Per the fallback-chain design: NO
-                        # local retry, NO wait — immediately try the next
-                        # model. (Logged for visibility only — the server's
-                        # suggested delay is surfaced but not obeyed, since
-                        # obeying it would block this thread.)
-                        retry_delay = _extract_retry_delay_seconds(exc)
-                        logger.warning(
-                            "Key #%s hit quota on model '%s' (429 "
-                            "RESOURCE_EXHAUSTED%s) — immediately moving to "
-                            "the next model, no local retry/wait",
-                            key_index + 1, model,
-                            f", server-suggested retryDelay={retry_delay:.1f}s (not obeyed)" if retry_delay else "",
-                        )
-                        continue  # next model, same key
-
-                    if _is_transient_error(exc):
-                        # tenacity already retried this internally
-                        # (GEMINI_MAX_TRANSIENT_RETRIES + 1 attempts,
-                        # exponential backoff) and it still failed — this
-                        # also covers ReadTimeouts. Nothing more to do on
-                        # this (key, model) pair.
-                        logger.warning(
-                            "Transient Gemini error/timeout persisted through "
-                            "tenacity's retry budget on key #%s, model '%s' "
-                            "— moving to the next model",
-                            key_index + 1, model,
-                        )
-                        continue
-
-                    # Not a quota error, and not a (recognized) transient
-                    # error at all — not worth retrying or rotating for.
-                    logger.error("Non-retryable Gemini error on model '%s': %s", model, exc, exc_info=True)
-                    raise
-                else:
-                    # Only a genuinely successful call counts toward RPD —
-                    # see DailyRequestTracker's docstring for why failed
-                    # attempts are deliberately excluded.
-                    _daily_request_tracker.increment()
-                    return result
-
-            if key_had_capacity:
-                logger.warning(
-                    "All %s model(s) in GEMINI_MODEL_CASCADE exhausted for "
-                    "key #%s — falling back to the next key, if any remain",
-                    len(config.GEMINI_MODEL_CASCADE), key_index + 1,
-                )
-
-        if not any_capacity_found:
-            logger.warning(
-                "Every (key, model) pair is at its local rate limit — "
-                "bypassing the Gemini API entirely (zero requests sent) "
-                "and triggering the fallback immediately",
-            )
-            raise AllKeysRateLimited(
-                f"All {n_keys} key(s) x {len(config.GEMINI_MODEL_CASCADE)} "
-                f"model(s) at their local rate limits"
-            )
-
-        logger.error(
-            "ALL_KEYS_EXHAUSTED: every key (%s) and every model (%s) was "
-            "attempted and failed — THIS is the only point where the "
-            "GitHub fallback (Telegram alert + persistent queue) gets "
-            "triggered. Last error: %s",
-            n_keys, ", ".join(config.GEMINI_MODEL_CASCADE), last_exc,
-        )
-        raise AllKeysExhaustedError("ALL_KEYS_EXHAUSTED") from last_exc
-
-
-@retry(
-    retry=retry_if_exception(lambda exc: isinstance(exc, AllKeysExhaustedError)),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=2, min=15, max=60),
-    reraise=True,
-)
-def generate_with_outer_backoff(prompt: str, **kwargs):
-    """
-    NOT called anywhere in the default pipeline — provided because it was
-    explicitly requested (tenacity-wrapped outer retry, triggering only on
-    AllKeysExhaustedError, wait_exponential(multiplier=2, min=15, max=60)),
-    but intentionally NOT wired into score_project()/draft_proposal().
-
-    Why: this BLOCKS the calling thread for 15-60+ seconds (possibly twice,
-    across up to 3 attempts — worst case ~2 minutes) every time the entire
-    key x model grid is genuinely exhausted. In this codebase, _generate()
-    is only ever called from main.py's single consumer thread — the same
-    thread responsible for draining the REST of the backlog queue. Under
-    the exact "burst backlog" scenario this was meant to help with, a
-    blocking wait here would freeze the consumer for the whole backoff
-    duration instead of moving on to the next queued project, making
-    backlog throughput WORSE, not better.
-
-    The non-blocking equivalent already exists in this codebase: when
-    _generate() raises, evaluate_project() returns ai_failed=True,
-    main.py's handle_ai_unavailable() queues the project to the
-    GitHub-hosted persistent queue (see github_fallback.py) and sends an
-    instant Telegram notice, and main.py's consumer_loop() ALREADY
-    periodically re-attempts everything in that queue (every
-    config.GITHUB_RETRY_CHECK_INTERVAL — default 300s — see
-    retry_pending_queue()). That's "wait for the RPM window to
-    reset, then retry the whole thing" — just implemented so the consumer
-    thread stays free to keep processing other items while it waits,
-    rather than blocking on one project.
-
-    If you have a specific reason to want blocking backoff for some other
-    call site (e.g. a one-off synchronous script, not the producer/
-    consumer pipeline), this function is ready to use as-is.
-    """
-    return _generate(prompt, **kwargs)
 
 
 def _extract_balanced_json(text: str) -> Optional[str]:
@@ -1152,8 +764,9 @@ class DailyRequestTracker:
 
     Only counts calls that actually SUCCEEDED. Failed attempts (429s,
     transient errors) are deliberately not counted here — they're already
-    handled by KeyRateLimiter (proactive) and the key/model fallback chain
-    (reactive) separately, so this tracker stays focused on one question:
+    handled by gemini_client's local proactive RPM limiter and its
+    model/key cascade (reactive) separately, so this tracker stays
+    focused on one question:
     "how much real scoring/drafting work got done today," which is what
     adaptive thresholding actually wants to protect.
 

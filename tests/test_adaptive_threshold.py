@@ -136,19 +136,27 @@ def test_zero_quota_configured_is_a_noop(monkeypatch):
 
 def test_only_successful_calls_increment_the_counter(monkeypatch, make_fake_response):
     """The counter must only reflect genuinely successful Gemini calls,
-    not failed attempts."""
+    not failed attempts. Exercises the REAL ai_agent._generate() (where
+    _daily_request_tracker.increment() actually lives) by faking one
+    level down, at the async cascade client's generate() coroutine —
+    _call_gemini_once no longer exists after the model-cascade rewrite
+    (see gemini_client.py); this is the equivalent seam today."""
     monkeypatch.setattr(config, "MY_SKILLS", ["python"])
 
-    monkeypatch.setattr(ai_agent, "_call_gemini_once", lambda *a, **kw: make_fake_response(
-        parsed=ai_agent.ProjectScoreSchema(match_score=50, reasoning="ok", suggested_price="$1", delivery_days=1),
-    ))
+    async def fake_generate_ok(prompt, gen_config):
+        response = make_fake_response(
+            parsed=ai_agent.ProjectScoreSchema(match_score=50, reasoning="ok", suggested_price="$1", delivery_days=1),
+        )
+        return ai_agent.gemini_client.GenerationResult(response, "gemini-3.5-flash-lite", 0, 1)
+
+    monkeypatch.setattr(ai_agent._cascade_client, "generate", fake_generate_ok)
     ai_agent.score_project("T", "D")
     assert ai_agent._daily_request_tracker.get_today_count() == 1
 
-    def always_fail(*a, **kw):
+    async def always_fail(prompt, gen_config):
         raise RuntimeError("simulated non-retryable failure")
 
-    monkeypatch.setattr(ai_agent, "_call_gemini_once", always_fail)
+    monkeypatch.setattr(ai_agent._cascade_client, "generate", always_fail)
     try:
         ai_agent.score_project("T2", "D2")
     except Exception:

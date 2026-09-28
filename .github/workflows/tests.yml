@@ -5,6 +5,29 @@ name: Tests
 # Gemini/Telegram/Mostaql, no secrets are needed: conftest.py supplies
 # placeholder env vars for anything config.py requires at import time.
 #
+# PYTHON VERSION SOURCE OF TRUTH: `python-version-file: .python-version`.
+# actions/setup-python does NOT understand runtime.txt's Render-specific
+# "python-X.Y" prefix (confirmed against actions/setup-python#530 — it
+# reads the raw file content and looks for a literal version named
+# "python-3.14", which doesn't exist, so pointing python-version-file
+# straight at runtime.txt fails outright). .python-version instead holds
+# the bare "3.14" — no prefix — which setup-python (and pyenv/asdf, if
+# anyone runs this locally with those) reads natively.
+#
+# THIS FILE MUST STAY IN SYNC WITH runtime.txt — both should name the same
+# Python series, just in each tool's required format ("python-3.14" for
+# Render's runtime.txt, which can't hold comments since Render reads it
+# literally; "3.14" here). Both use the major.minor-only form so Render and
+# this workflow each independently resolve to their own latest matching
+# patch, without pinning an exact patch that a runner-image update or a
+# Render base-image bump could stop shipping — this is the fix for the
+# "Version '3.12.3' not found for Ubuntu 26.04" failure hit when dry-running
+# the ubuntu-26.04 runner migration with an exact-patch pin. Dependabot
+# (see .github/dependabot.yml) does not currently bump either file
+# automatically — see that file's own comment for why, and what to do
+# manually when a new CPython series ships and this project's dependencies
+# (requirements.txt) support it.
+#
 # Note: GitHub may print a "Node.js 20 is deprecated... forced to run on
 # Node.js 24" warning for the actions below. This is non-blocking — the
 # actions still work, GitHub's runners already execute them on a newer
@@ -25,15 +48,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Matches runtime.txt exactly, so CI reflects the same interpreter
-      # version the bot actually runs under on Render.
+      # Reads .python-version (see the comment above) instead of a
+      # hardcoded python-version here, and instead of runtime.txt, which
+      # this action can't parse directly.
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
         run: pytest -v
+

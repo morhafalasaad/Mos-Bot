@@ -86,10 +86,16 @@ else:
 # Kept as an alias for any code that still references the singular name.
 GEMINI_API_KEY = GEMINI_API_KEYS[0]
 
-# Single stable model, used directly with no fallback chain (by request).
-# Override via the GEMINI_MODEL env var if Google renames/retires this
-# model later — no code change needed.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+# NOTE: single-model selection (GEMINI_MODEL) has been replaced by a full
+# quota-aware model CASCADE — see GEMINI_MODEL_CASCADE, MODEL_RPM_LIMITS,
+# and MODEL_RPD_LIMITS further below in this file, plus gemini_client.py's
+# module docstring for the complete design. GEMINI_MODEL is kept ONLY as a
+# soft back-compat shim: if set, it is inserted at the FRONT of the
+# default cascade (ahead of even the primary tier) so an existing
+# deployment's pinned model is tried first, then everything else in the
+# hierarchy still applies as a fallback. Leave unset to use the default
+# cascade as-is (recommended).
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip() or None
 
 # ---- Gemini-only proxy (split tunneling) -----------------------------------
 # Optional. If your local IP is in a region the Gemini API rejects
@@ -378,71 +384,140 @@ GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "30"))
 
 # ---- Transient Gemini error retry (504 Gateway Timeout / DEADLINE_EXCEEDED / 503) ---
 # Distinct from API-key rotation (which only helps with 429 quota errors):
-# these are gateway/server-side hiccups where retrying the SAME key after a
-# short wait is the right move. See ai_agent._generate() for the full
-# retry-then-rotate logic.
+# these are gateway/server-side hiccups where retrying the SAME (model,
+# key) pair after a short wait is the right move. See
+# gemini_client.GeminiCascadeClient._attempt() for the full retry-then-
+# rotate logic.
 GEMINI_MAX_TRANSIENT_RETRIES = int(os.getenv("GEMINI_MAX_TRANSIENT_RETRIES", "2"))
 GEMINI_RETRY_BACKOFF_BASE = float(os.getenv("GEMINI_RETRY_BACKOFF_BASE", "2"))  # seconds
 
-# ---- Transient-error backoff cap (tenacity) -------------------------------------
-# GEMINI_QUOTA_BACKOFF_MAX caps tenacity's exponential backoff for
+# ---- Transient-error backoff cap -------------------------------------------------
+# GEMINI_QUOTA_BACKOFF_MAX caps the exponential backoff used for
 # TRANSIENT errors only (504/DEADLINE_EXCEEDED/503/500) — see
-# ai_agent._call_gemini_once's @retry decorator. As of this revision, 429
-# quota errors are NEVER retried locally at all (no same-key wait, no
-# backoff) — a 429 immediately moves to the next (key, model) pair in the
-# fallback chain (see ai_agent._generate), which is the fastest way to
-# actually get an answer during a burst backlog rather than waiting out a
-# per-minute window that may not have reset yet.
+# gemini_client.GeminiCascadeClient._attempt(). 429 quota errors are NEVER
+# retried on the same (model, key) pair at all (no same-pair wait, no
+# backoff) — an RPM 429 immediately rotates to the next key on the same
+# model, an RPD 429 parks that pair and moves to the next model — which is
+# the fastest way to actually get an answer during a burst backlog rather
+# than waiting out a window that may not have reset yet.
 GEMINI_QUOTA_BACKOFF_MAX = float(os.getenv("GEMINI_QUOTA_BACKOFF_MAX", "20"))    # seconds cap
 
 # ---- Proactive local rate limiter (avoid triggering 429s in the first place) ---
-# Hard cap of requests per key per rolling 60s window, enforced client-side
-# BEFORE a request is sent — free tier is 15 RPM, so 14 leaves a safety
-# margin for clock drift between our tracker and Google's. See
-# ai_agent.KeyRateLimiter. When every configured key is at this cap,
-# _generate() raises AllKeysRateLimited immediately (zero API calls made)
-# instead of firing a request likely to be rejected anyway.
+# Kept as the global default cap for any model NOT listed in
+# MODEL_RPM_LIMITS below. Free tier is commonly 15 RPM for a "-lite"
+# model, so 14 leaves a small safety margin for clock drift between our
+# local tracker and Google's. See gemini_client.KeyPool. This is a
+# PROACTIVE guard — requests are held back locally before ever hitting
+# the network once a (model, key) pair's local window is full; it does
+# not replace Google's own real 429s, which are still handled reactively
+# by the cascade (see requirement #2 in gemini_client.py's docstring).
 GEMINI_MAX_RPM_PER_KEY = int(os.getenv("GEMINI_MAX_RPM_PER_KEY", "14"))
 
-# ---- Multi-model fallback cascade -----------------------------------------------
-# Tried in order, highest-RPM first, falling back to the next entry on
-# rate limits, timeouts, or API errors that survive the current (key,
-# model) pair. See ai_agent._generate(). Override via a comma-separated
-# GEMINI_MODEL_CASCADE env var if your available models/tiers differ.
+# ---- Model hierarchy & cascading order -----------------------------------------
+# MODEL-MAJOR cascade (see gemini_client.py's module docstring for the
+# full design): for the CURRENT model, every configured API key is tried
+# in round-robin order before the cascade moves on to the NEXT model.
+# This drains a high-quota model across every key before a scarce one is
+# ever touched, rather than exhausting every model on one key first.
 #
-# gemini-2.5-flash-lite was REMOVED from this default (previously the
-# 2nd entry) after Google retired it entirely — it started returning a
-# permanent `404 NOT_FOUND: ... no longer available to new users` for
-# every single call, not a transient/rate-limit error. Unlike a rate
-# limit (worth retrying later, or on a different key/model), a retired
-# model can NEVER succeed again — leaving it in the cascade meant every
-# fallback chain that fell through past the first model wasted an
-# attempt (and the latency of a full request round-trip) on something
-# guaranteed to fail, before ever reaching a model that could actually
-# work. If gemini-2.5-flash (still below) starts doing the same, remove
-# it here too — Google tends to retire an entire model generation
-# together, though that isn't confirmed for this one as of this writing.
-GEMINI_MODEL_CASCADE = [
-    m.strip() for m in os.getenv(
-        "GEMINI_MODEL_CASCADE",
-        "gemini-3.5-flash-lite,gemini-3.5-flash,gemini-2.5-flash",
-    ).split(",") if m.strip()
-]
+# Order below matches the specified hierarchy exactly:
+#   PRIMARY  (high quota, 15 RPM / 500 RPD) — tried first, in this order:
+#     gemini-3.5-flash-lite, gemini-3.1-flash-lite
+#   FALLBACK (low quota, 5 RPM / 20 RPD) — tried only once BOTH primary
+#     models are exhausted (RPD) or unavailable, in this order:
+#     gemini-3.8-flash -> gemini-3.7-flash -> gemini-3.6-flash ->
+#     gemini-3.5-flash -> gemini-3-flash -> gemini-2.5-flash-lite
+#
+# Override via a comma-separated GEMINI_MODEL_CASCADE env var if your
+# available models/tiers differ. Every entry (default or overridden) is
+# validated against gemini_client.BLACKLISTED_MODELS at startup — a
+# blacklisted entry is DROPPED with a loud warning, never routed to; see
+# "Blacklisted models" immediately below for the reasoning.
+#
+# GEMINI_MODEL (legacy single-model env var, see above) is prepended
+# here, ahead of even the primary tier, ONLY if it is set and not itself
+# blacklisted.
+_cascade_env = os.getenv("GEMINI_MODEL_CASCADE", "").strip()
+if _cascade_env:
+    GEMINI_MODEL_CASCADE = [m.strip() for m in _cascade_env.split(",") if m.strip()]
+else:
+    GEMINI_MODEL_CASCADE = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-2.5-flash-lite",
+    ]
+if GEMINI_MODEL and GEMINI_MODEL not in GEMINI_MODEL_CASCADE:
+    GEMINI_MODEL_CASCADE.insert(0, GEMINI_MODEL)
 
-# Per-model RPM caps for the LOCAL proactive rate limiter, as specified.
-# Not independently re-verified against Google's live quota pages as of
-# this writing — confirm against your actual quota tier
+# ---- Blacklisted models (0 RPM / 0 RPD — deprecated or disabled) ---------------
+# These can NEVER be configured or routed to, regardless of what
+# GEMINI_MODEL_CASCADE / GEMINI_MODEL contain — enforced independently in
+# gemini_client.is_blacklisted()/build_cascade(), matched on a normalised
+# name so "-preview"/"-001"/dated-suffix/"models/" variants can't slip
+# through either. Listed here only for visibility; the authoritative set
+# lives in gemini_client.BLACKLISTED_MODELS.
+#   - Gemini 2 Flash          (gemini-2-flash / gemini-2.0-flash)
+#   - Gemini 2 Flash Lite     (gemini-2-flash-lite / gemini-2.0-flash-lite)
+#   - Gemini 2.5 Pro          (gemini-2.5-pro)
+#   - Gemini 3.1 Pro          (gemini-3.1-pro)
+#   - Gemini Omni Flash       (gemini-omni-flash)
+
+# Per-model RPM caps for the LOCAL proactive rate limiter, as specified:
+# 15 RPM for the two primary/high-quota models, 5 RPM for every fallback
+# model. Not independently re-verified against Google's live quota pages
+# as of this writing — confirm against your actual quota tier
 # (https://aistudio.google.com/app/apikey or your Cloud Console quota
 # page) and override via the env vars below; quotas change over time and
-# by billing tier. Any model in GEMINI_MODEL_CASCADE not listed here falls
-# back to GEMINI_MAX_RPM_PER_KEY.
+# by billing tier. Any model in GEMINI_MODEL_CASCADE not listed here
+# falls back to GEMINI_MAX_RPM_PER_KEY (primary-tier default) if it looks
+# like one of the two known "-lite" primaries, else 5 (fallback-tier
+# default) — see gemini_client.build_cascade()'s unknown-model handling.
 MODEL_RPM_LIMITS = {
     "gemini-3.5-flash-lite": int(os.getenv("GEMINI_RPM_FLASH_LITE_35", "15")),
+    "gemini-3.1-flash-lite": int(os.getenv("GEMINI_RPM_FLASH_LITE_31", "15")),
+    "gemini-3.8-flash": int(os.getenv("GEMINI_RPM_FLASH_38", "5")),
+    "gemini-3.7-flash": int(os.getenv("GEMINI_RPM_FLASH_37", "5")),
+    "gemini-3.6-flash": int(os.getenv("GEMINI_RPM_FLASH_36", "5")),
     "gemini-3.5-flash": int(os.getenv("GEMINI_RPM_FLASH_35", "5")),
-    "gemini-2.5-flash": int(os.getenv("GEMINI_RPM_FLASH_25", "5")),
+    "gemini-3-flash": int(os.getenv("GEMINI_RPM_FLASH_3", "5")),
+    "gemini-2.5-flash-lite": int(os.getenv("GEMINI_RPM_FLASH_LITE_25", "5")),
 }
 
-# Light throttling between consecutive (key, model) attempts within a
+# Per-model RPD (requests/day) caps — used to size how long an RPD-
+# exhausted (model, key) pair is parked (see gemini_client's
+# QuotaKind.RPD handling, which actually parks until the next Pacific-
+# time midnight regardless of this figure; these are mainly for
+# logging/diagnostics and GEMINI_ESTIMATED_DAILY_QUOTA below).
+MODEL_RPD_LIMITS = {
+    "gemini-3.5-flash-lite": int(os.getenv("GEMINI_RPD_FLASH_LITE_35", "500")),
+    "gemini-3.1-flash-lite": int(os.getenv("GEMINI_RPD_FLASH_LITE_31", "500")),
+    "gemini-3.8-flash": int(os.getenv("GEMINI_RPD_FLASH_38", "20")),
+    "gemini-3.7-flash": int(os.getenv("GEMINI_RPD_FLASH_37", "20")),
+    "gemini-3.6-flash": int(os.getenv("GEMINI_RPD_FLASH_36", "20")),
+    "gemini-3.5-flash": int(os.getenv("GEMINI_RPD_FLASH_35", "20")),
+    "gemini-3-flash": int(os.getenv("GEMINI_RPD_FLASH_3", "20")),
+    "gemini-2.5-flash-lite": int(os.getenv("GEMINI_RPD_FLASH_LITE_25", "20")),
+}
+
+# ---- Outer exponential backoff across full cascade sweeps ---------------------
+# When EVERY (model, key) pair is unavailable (RPM-cooling or RPD-parked),
+# gemini_client.GeminiCascadeClient.generate() waits with exponential
+# backoff and sweeps the WHOLE cascade again, up to GEMINI_BACKOFF_SWEEPS
+# times, before finally raising QuotaExhaustedError. Each wait is sized
+# toward the soonest real recovery (never sleeping past the moment
+# something frees up) and capped at GEMINI_OUTER_BACKOFF_CAP; the whole
+# request additionally cannot exceed GEMINI_TOTAL_DEADLINE_SECONDS.
+GEMINI_BACKOFF_SWEEPS = int(os.getenv("GEMINI_BACKOFF_SWEEPS", "3"))
+GEMINI_OUTER_BACKOFF_BASE = float(os.getenv("GEMINI_OUTER_BACKOFF_BASE", "2"))    # seconds
+GEMINI_OUTER_BACKOFF_CAP = float(os.getenv("GEMINI_OUTER_BACKOFF_CAP", "60"))     # seconds cap
+GEMINI_TOTAL_DEADLINE_SECONDS = float(os.getenv("GEMINI_TOTAL_DEADLINE_SECONDS", "180"))
+
+# Light throttling between consecutive (model, key) attempts within a
 # single _generate() call, so a burst of backlog items being drained in
 # quick succession doesn't itself trip RPM limits — deliberately small
 # (a fraction of a Gemini call's own latency), not a rate-limit recovery

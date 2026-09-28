@@ -1,0 +1,224 @@
+name: Auto-update Python version
+
+# Weekly check for a newer STABLE Python minor series than the one
+# currently pinned in .python-version / runtime.txt, and opens a PR
+# bumping both if one exists. tests.yml's own `pull_request` trigger runs
+# all 183 tests against the PR automatically — nothing extra is needed
+# here to wire that up.
+#
+# SOURCE OF TRUTH: actions/python-versions' versions-manifest.json — this
+# is the SAME manifest actions/setup-python itself reads to resolve a
+# version on the runner (see that repo's README: "this is prepared for
+# and only permitted for use by actions runner-images and setup-python
+# action"). Checking against it, rather than python.org's release feed or
+# a third-party EOL tracker, guarantees that any version this workflow
+# proposes is one setup-python can actually install — a version python.org
+# just released but actions/python-versions hasn't packaged yet would
+# make the resulting PR's own tests.yml run fail for a reason unrelated to
+# the bump itself. Only entries with "stable": true are considered, so a
+# prerelease (alpha/beta/rc) is never proposed.
+#
+# WHY THIS DOESN'T ALSO CHECK RENDER OR requirements.txt COMPATIBILITY:
+# Render has no public "supported Python versions" API to query — it
+# tracks upstream CPython closely in practice (see README.md's Python
+# version section for how that was confirmed at the time this workflow
+# was written), but that isn't something this workflow can verify
+# automatically today. Nor can it verify every pinned dependency in
+# requirements.txt actually installs and behaves correctly under the new
+# interpreter beyond what `pip install` and the 183 mocked tests catch —
+# see this repo's README for the specific reason that matters here
+# (cloudscraper, in particular, is effectively unmaintained and nothing in
+# the test suite exercises its real runtime behavior). This is exactly why
+# the PR this workflow opens is a PR, reviewed by a human before merging,
+# rather than merged unattended — see the PR body this workflow writes,
+# and the auto-merge section further down, for how to change that
+# tradeoff deliberately if you want to.
+#
+# WHAT "NEWER" MEANS HERE: only a newer MINOR series (3.14 -> 3.15) is
+# proposed. A newer PATCH within the currently-pinned minor (3.14.5 ->
+# 3.14.7) is intentionally never proposed by this workflow, because
+# .python-version/runtime.txt are already major.minor-only (see
+# README.md) — Render and actions/setup-python each independently resolve
+# their own latest matching patch on every deploy/run with NO file change
+# needed, so a patch-only bump would be a PR with nothing to actually
+# change.
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC. Comment/change this if you'd rather it
+    # ran on a different day — this specific time has no significance
+    # beyond "not midnight, so a failure is more likely to be noticed
+    # same-day rather than overnight."
+    - cron: "0 9 * * 1"
+  # Lets you trigger a check on demand from the Actions tab, instead of
+  # waiting for next Monday, e.g. right after a Python series you're
+  # watching for goes stable.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    outputs:
+      update_needed: ${{ steps.compare.outputs.update_needed }}
+      pr-number: ${{ steps.pr.outputs.pull-request-number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Ensure packaging is available for version comparison
+        # Must run BEFORE the step below that imports it — runners have
+        # pip preinstalled but not necessarily this exact package.
+        run: pip install --quiet "packaging>=23"
+
+      - name: Read current pinned version
+        id: current
+        run: |
+          current="$(cat .python-version | tr -d '[:space:]')"
+          echo "Current .python-version: $current"
+          echo "version=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Determine latest stable minor series
+        id: latest
+        run: |
+          set -euo pipefail
+          manifest="$(curl -fsSL https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json)"
+
+          # Pick the highest "stable": true entry, then reduce it to its
+          # major.minor form (3.14.7 -> 3.14) — .python-version/runtime.txt
+          # intentionally never pin a patch (see the header comment above).
+          latest_minor="$(echo "$manifest" | python3 -c '
+          import json, sys
+          from packaging.version import Version
+
+          data = json.load(sys.stdin)
+          stable = [e["version"] for e in data if e.get("stable") is True]
+          if not stable:
+              print("ERROR: no stable entries found in manifest", file=sys.stderr)
+              sys.exit(1)
+          newest = max(stable, key=Version)
+          v = Version(newest)
+          print(f"{v.major}.{v.minor}")
+          ')"
+
+          echo "Latest stable minor series per actions/python-versions: $latest_minor"
+          echo "version=$latest_minor" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.current.outputs.version }}" = "${{ steps.latest.outputs.version }}" ]; then
+            echo "Already on the latest stable minor series — nothing to do."
+            echo "update_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Update available: ${{ steps.current.outputs.version }} -> ${{ steps.latest.outputs.version }}"
+            echo "update_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update .python-version and runtime.txt
+        if: steps.compare.outputs.update_needed == 'true'
+        run: |
+          new="${{ steps.latest.outputs.version }}"
+          echo "$new" > .python-version
+          echo "python-$new" > runtime.txt
+          echo "--- .python-version ---"
+          cat .python-version
+          echo "--- runtime.txt ---"
+          cat runtime.txt
+
+      - name: Open pull request
+        if: steps.compare.outputs.update_needed == 'true'
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Bump Python to ${{ steps.latest.outputs.version }}"
+          branch: "auto-update/python-${{ steps.latest.outputs.version }}"
+          delete-branch: true
+          title: "Bump Python ${{ steps.current.outputs.version }} → ${{ steps.latest.outputs.version }}"
+          labels: |
+            automated
+            python-version
+          body: |
+            Opened automatically by `.github/workflows/auto-update-python.yml`.
+
+            A newer **stable** Python minor series is available per
+            [`actions/python-versions`'s manifest](https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json)
+            (the same manifest `actions/setup-python` itself resolves against):
+
+            - Current: `${{ steps.current.outputs.version }}`
+            - Latest stable: `${{ steps.latest.outputs.version }}`
+
+            This PR updates `.python-version` and `runtime.txt` to the new
+            series (both stay major.minor-only, so Render and CI each
+            resolve their own latest patch independently — see
+            `README.md`'s "Python version" section).
+
+            **This does not verify Render or dependency compatibility
+            beyond what `requirements.txt` installing successfully and the
+            183 mocked tests in this PR's CI run catch.** In particular,
+            `cloudscraper` is effectively unmaintained and nothing in the
+            test suite exercises its real runtime behavior — see
+            `README.md` for why this project treats a Python series bump
+            as review-worthy rather than merging it unattended by default.
+
+            Please wait for `Tests` to go green below, then review and
+            merge — or see this workflow's own comments for how to enable
+            unattended auto-merge if you'd rather opt into that.
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.compare.outputs.update_needed }}" = "true" ]; then
+            echo "### Python version check: update opened :arrow_up:" >> "$GITHUB_STEP_SUMMARY"
+            echo "${{ steps.current.outputs.version }} → ${{ steps.latest.outputs.version }} — see PR ${{ steps.pr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Python version check: up to date :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+            echo "Currently pinned to \`${{ steps.current.outputs.version }}\`, which matches the latest stable series." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------
+  # OPT-IN: fully unattended merge (gh pr merge --auto --squash).
+  # ---------------------------------------------------------------------
+  # Disabled by default (see the `if:` below) for the reasons explained in
+  # this file's header comment and in the PR body above — a Python series
+  # bump isn't something this project's test suite can fully characterize
+  # (no integration tests against real Gemini/Telegram/Mostaql/MongoDB,
+  # and cloudscraper specifically has no active upstream maintenance to
+  # lean on either). To opt in and make this workflow 100% zero-touch:
+  #
+  #   1. Change the `if:` condition below from `false` to
+  #      `needs.check-and-update.outputs.update_needed == 'true'` — this
+  #      condition ALSO guards against running with an empty PR number:
+  #      when no update was needed, check-and-update's "Open pull
+  #      request" step never ran, so pr-number would otherwise be empty
+  #      and `gh pr merge` would fail on a blank argument.
+  #   2. Confirm your repo's branch protection allows GitHub's native
+  #      auto-merge (Settings -> General -> "Allow auto-merge").
+  #   3. If `main` has required status checks configured, `Tests` must be
+  #      one of them, or auto-merge will have nothing to wait for and the
+  #      PR will sit queued indefinitely.
+  #
+  # Once enabled, this job runs `gh pr merge --auto --squash` on the PR
+  # opened above immediately after creation. GitHub queues the merge and
+  # completes it the moment tests.yml's required checks pass on that PR —
+  # with zero manual review or clicks, exactly as requested.
+  auto-merge:
+    needs: check-and-update
+    if: false  # <-- change this condition to enable fully unattended merging (see comment above)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Enable auto-merge on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --auto --squash "${{ needs.check-and-update.outputs.pr-number }}"
