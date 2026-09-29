@@ -271,17 +271,50 @@ def is_quota_error(exc: BaseException) -> bool:
     return "RESOURCE_EXHAUSTED" in status or "RESOURCE_EXHAUSTED" in text or " 429" in text[:12]
 
 
+def _exc_chain(exc: BaseException) -> Iterable[BaseException]:
+    """Yields exc and everything it wraps (__cause__/__context__), cycle-safe."""
+    seen: set = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        yield cur
+        cur = cur.__cause__ or cur.__context__
+
+
+# Class names (matched against the whole MRO) that mean "network hiccup".
+# Matched by name so it works for httpx, httpcore and SDK-wrapped variants
+# without importing them. NOTE: httpx.ReadTimeout has an EMPTY str(), so
+# text matching alone (the old behaviour) silently missed it.
+_TRANSIENT_EXC_NAMES = frozenset({
+    "TimeoutException", "ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout",
+    "NetworkError", "ReadError", "WriteError", "ConnectError", "CloseError",
+    "RemoteProtocolError", "ProtocolError", "ServerDisconnectedError",
+})
+
+
 def is_transient_error(exc: BaseException) -> bool:
     """5xx / timeout-style errors: worth a bounded retry on the same pair."""
-    if _is_api_error_code(exc, 500, 502, 503, 504):
-        return True
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
-        return True
-    text = str(exc).lower()
-    return any(m in text for m in (
-        "deadline_exceeded", "gateway timeout", "service unavailable",
-        "server disconnected", "internal error", "readtimeout", "connecttimeout",
-    ))
+    for e in _exc_chain(exc):
+        if _is_api_error_code(e, 500, 502, 503, 504):
+            return True
+        if isinstance(e, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+            return True
+        if any(c.__name__ in _TRANSIENT_EXC_NAMES for c in type(e).__mro__):
+            return True
+        text = str(e).lower()
+        if any(m in text for m in (
+            "deadline_exceeded", "gateway timeout", "service unavailable",
+            "server disconnected", "internal error", "readtimeout", "connecttimeout",
+            "timed out",
+        )):
+            return True
+    return False
+
+
+def describe_exc(exc: BaseException) -> str:
+    """Log-friendly description: never blank, even for exceptions with no message."""
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg}" if msg else f"{type(exc).__name__} (no message)"
 
 
 def is_model_gone_error(exc: BaseException) -> bool:
@@ -742,7 +775,7 @@ class GeminiCascadeClient:
                         self.pool.mark_model_dead(model, self.t.dead_model_seconds)
                         logger.error(
                             "Model '%s' returned NOT_FOUND/retired (%s) — parking it "
-                            "for %.0fh and moving on.", model, exc, self.t.dead_model_seconds / 3600,
+                            "for %.0fh and moving on.", model, describe_exc(exc), self.t.dead_model_seconds / 3600,
                         )
                         break  # next model
                     if is_transient_error(exc):
@@ -754,7 +787,7 @@ class GeminiCascadeClient:
                     # Non-quota, non-transient, non-404 (e.g. 400 bad request,
                     # 401/403 auth, safety block): another key/model will not
                     # fix a broken request. Fail fast.
-                    logger.error("Non-retryable Gemini error on %s / key #%d: %s", model, idx + 1, exc)
+                    logger.error("Non-retryable Gemini error on %s / key #%d: %s", model, idx + 1, describe_exc(exc))
                     raise
         return None, last_exc
 

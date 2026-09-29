@@ -380,7 +380,7 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 # ---- Gemini call timeout (seconds) ---------------------------------------------
 # The google-generativeai SDK does NOT time out by default — this is the #1
 # cause of a worker silently hanging forever with no error and no logs.
-GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "30"))
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "60"))
 
 # ---- Transient Gemini error retry (504 Gateway Timeout / DEADLINE_EXCEEDED / 503) ---
 # Distinct from API-key rotation (which only helps with 429 quota errors):

@@ -587,3 +587,41 @@ def test_keypool_skips_blocked_and_reports_none_when_all_blocked():
     p.block("m", 1, 100, QuotaKind.RPD)
     assert p.next_key_for("m", 15) is None
     assert p.blocked_kind("m", 1) is QuotaKind.RPD
+
+
+# ---------------------------------------------------------------------------
+# Regression: httpx.ReadTimeout (empty message) must be TRANSIENT, not fatal.
+# Seen in production 2026-09-29 09:57-10:02 UTC: both keys timed out, the
+# blank-message ReadTimeout was classified "Non-retryable" and the call was
+# abandoned after a single attempt.
+# ---------------------------------------------------------------------------
+def test_httpx_read_timeout_with_empty_message_is_transient():
+    import httpx
+
+    exc = httpx.ReadTimeout("")
+    assert str(exc) == ""
+    assert gc.is_transient_error(exc)
+    assert gc.is_transient_error(httpx.ConnectTimeout(""))
+    assert gc.is_transient_error(httpx.RemoteProtocolError("peer closed"))
+
+
+def test_wrapped_timeout_is_transient_via_cause_chain():
+    try:
+        try:
+            import httpx
+            raise httpx.ReadTimeout("")
+        except Exception as inner:
+            raise RuntimeError("") from inner
+    except RuntimeError as outer:
+        assert gc.is_transient_error(outer)
+
+
+def test_bad_request_is_still_not_transient():
+    assert not gc.is_transient_error(ValueError("400 INVALID_ARGUMENT"))
+
+
+def test_describe_exc_is_never_blank():
+    import httpx
+
+    assert "ReadTimeout" in gc.describe_exc(httpx.ReadTimeout(""))
+    assert gc.describe_exc(ValueError("boom")) == "ValueError: boom"
