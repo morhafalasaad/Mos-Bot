@@ -132,7 +132,7 @@ jobs:
       - name: Open pull request
         if: steps.compare.outputs.update_needed == 'true'
         id: pr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "Bump Python to ${{ steps.latest.outputs.version }}"
