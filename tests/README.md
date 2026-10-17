@@ -23,24 +23,29 @@ pytest tests/test_batch_scoring.py::test_batch_scoring_reduces_call_count -v
 | File | Feature |
 |---|---|
 | `test_score_cache.py` | `ai_agent.ScoreCache` — get/set, `MY_SKILLS` invalidation, max-entries eviction, corrupt-file handling, budget/timeline field round-trip |
-| `test_batch_scoring.py` | Batch scoring call-count reduction, dropped-index handling, total batch failure, cache interaction |
-| `test_local_prefilter.py` | `local_skill_prefilter`'s tag-based and title/description-based checks |
-| `test_adaptive_threshold.py` | `DailyRequestTracker` persistence/day-rollover, `get_effective_match_threshold`'s ramp |
+| `test_batch_scoring.py` | Batch scoring call-count reduction, dropped-index handling, total batch failure, cache interaction, and the batched path's budget/timeline fields + scraped `budget`/`duration` prompt context |
+| `test_local_prefilter.py` | `local_skill_prefilter`'s tag-based and title/description-based checks, plus `producer_loop` applying the full pre-filter (tags and title/description) before enqueuing |
+| `test_adaptive_threshold.py` | `DailyRequestTracker` persistence/day-rollover, `get_effective_match_threshold`'s ramp, and the default `GEMINI_ESTIMATED_DAILY_QUOTA` being sized for the primary cascade tier |
 | `test_client_aware_proposals.py` | `draft_proposal`'s client-info tone adaptation and the no-mention safety rule |
 | `test_richer_reasoning.py` | `matched_skills`/`missing_skills` parsing, including malformed-input defensiveness |
-| `test_budget_timeline_adherence.py` | `ProjectScoreSchema`'s budget/timeline strict-adherence fields, and their flow through `_finalize_score_result` (fresh score, cache hit, missing-field defaults) |
+| `test_budget_timeline_adherence.py` | `ProjectScoreSchema`/`_BatchScoreItem`'s budget/timeline strict-adherence fields and prompt rule, their flow through `_finalize_score_result` and `evaluate_projects_batch` (fresh score, cache hit, missing-field defaults), and scraped `budget`/`duration` appearing in the scoring prompts |
 | `test_screening_questions.py` | `ai_agent.draft_screening_answers` and its wiring into `_finalize_score_result`/`evaluate_project`/`evaluate_projects_batch` — only called above threshold, only when questions exist, never blocks the proposal on failure |
 | `test_scraper_screening_questions.py` | `scraper.parse_screening_questions`'s three extraction strategies (CSS selector, heading-anchored sibling walk, raw numbered-question regex) against synthetic HTML |
 | `test_reply_assistant.py` | `reply_assistant.get_reply_options` (prompt construction, multi-option parsing, failure handling) and `looks_like_client_message`'s local heuristic |
 | `test_main_reply_assistant.py` | `main.py`'s `_handle_text_message` routing (chat-ID filter, short-message skip) and the single shared Telegram listener's dispatch between `callback_query` and `message` updates |
 | `test_notifier_new_features.py` | `notifier.py`'s screening-questions section, budget/timeline adjustment note, and Reply Assistant message formatting |
 | `test_outcome_tracker.py` | Win/loss recording, correction/overwrite, validation |
-| `test_repost_detector.py` | Exact/fuzzy repost detection, expiry, size cap, self-exclusion |
+| `test_repost_detector.py` | Exact/fuzzy repost detection, expiry, size cap, self-exclusion, Telegram-Markdown escaping of titles in the warning string |
 | `test_notifier.py` | Telegram message and inline-keyboard construction |
 | `test_scraper_categories.py` | `MOSTAQL_CATEGORIES` → request URL building |
 | `test_my_skills_config.py` | `MY_SKILLS` env var override behavior |
 | `test_main_telegram_offset.py` | Telegram feedback offset persistence, fail-safe against any exception type |
 | `test_health_server.py` | `/status` snapshot, heartbeat staleness detection across all three worker threads |
+| `test_gemini_cascade.py` | `gemini_client.py`'s model-major cascade (primary `-lite` tier before fallbacks), round-robin key rotation, RPM-vs-RPD-aware 429 handling and cooldowns/parking, retired-model (404) parking, transient-error retries, outer exponential backoff and total deadline, blacklist guard, local per-key RPM cap — all with a scripted fake SDK client and virtualised time |
+| `test_seen_projects.py` | `scraper.get_new_projects` persisting only newly discovered ids, and `db.mark_seen`'s insert-if-missing bulk write (no TTL reset of existing documents, fallback path, never raises) |
+| `test_main_duration_threading.py` | `main.py` threading each project's scraped `duration` (and `budget`) into `evaluate_projects_batch` / `evaluate_project` from the normal path, the MongoDB retry queue and the GitHub-issue retry |
+| `test_watchdog.py` | `main.process_batch_with_watchdog`: a timed-out batch falls back for every project without blocking the next batch; exceptions are logged, not raised |
+| `test_env_example.py` | `.env.example` exists, lists every required variable, documents the key optional tunables, parses with `python-dotenv`, and only names variables `config.py` actually reads |
 | `test_incident_regressions.py` | Regression coverage for the retired `gemini-2.5-flash-lite` model and the Telegram 409 Conflict handling fix |
 
 ## How isolation works

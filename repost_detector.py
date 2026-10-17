@@ -49,6 +49,24 @@ def _normalize(text: str) -> str:
     return " ".join((text or "").lower().split())
 
 
+def _escape_markdown(text: Optional[str]) -> str:
+    """
+    Escapes the characters that break Telegram's LEGACY Markdown parser
+    (`_`, `*`, `` ` ``, `[`) so a project title can be safely embedded in
+    the warning string below. Without this, a title like "scraper_v2" or
+    "Need *urgent* help" makes Telegram reject the whole message with
+    HTTP 400, forcing notifier.py's plain-text fallback — which loses the
+    tap-to-copy formatting for the proposal. Mirrors notifier._escape_markdown
+    (kept local here rather than imported, so this module stays free of a
+    dependency on notifier).
+    """
+    if not text:
+        return ""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def check_and_record(project_id: str, title: str, description: str) -> Optional[str]:
     """
     Checks whether (title, description) looks like a near-duplicate of a
@@ -94,7 +112,7 @@ def check_and_record(project_id: str, title: str, description: str) -> Optional[
         if best_ratio >= config.REPOST_SIMILARITY_THRESHOLD:
             warning = (
                 f"⚠️ *يبدو أن هذا المشروع معاد نشره أو مكرر* "
-                f"(تشابه {best_ratio * 100:.0f}% مع: {best_title})"
+                f"(تشابه {best_ratio * 100:.0f}% مع: {_escape_markdown(best_title)})"
             )
             logger.info(
                 "Likely repost: '%s' is %.0f%% similar to previously-notified '%s'",

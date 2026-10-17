@@ -145,13 +145,53 @@ def get_seen_ids() -> set:
 
 
 def mark_seen(project_ids) -> None:
+    """
+    Upserts each given project id into `seen_projects`. Callers should pass
+    ONLY the ids newly discovered this cycle (scraper.get_new_projects
+    does) — not the whole historical set.
+
+    `seen_at` is only ever written when a document is CREATED: ids that
+    already exist are left completely alone, so re-marking one can never
+    extend the TTL clock (config.SEEN_PROJECTS_TTL_DAYS) of an old
+    document, and documents not in `project_ids` are never touched.
+
+    Round-trips: one `find` for the ids that already exist plus one
+    unordered `insert_many` for the missing ones (instead of N sequential
+    upserts). This deliberately avoids bulk_write/UpdateOne, which the
+    pinned mongomock used by the test-suite can't execute against current
+    pymongo. If the bulk insert fails for any reason (including a
+    duplicate-key race with another writer), we fall back to per-id
+    $setOnInsert upserts so one bad write can't lose the rest.
+    Never raises.
+    """
     if not project_ids:
         return
     try:
+        # dict.fromkeys de-duplicates while preserving order, and also
+        # accepts any iterable (list, set, generator).
+        ids = [pid for pid in dict.fromkeys(project_ids) if pid]
+        if not ids:
+            return
         coll = get_collection("seen_projects")
         now = datetime.now(timezone.utc)
-        for pid in project_ids:
-            coll.update_one({"_id": pid}, {"$set": {"seen_at": now}}, upsert=True)
+
+        existing = {d["_id"] for d in coll.find({"_id": {"$in": ids}}, {"_id": 1})}
+        missing = [pid for pid in ids if pid not in existing]
+        if not missing:
+            return
+
+        try:
+            coll.insert_many(
+                [{"_id": pid, "seen_at": now} for pid in missing],
+                ordered=False,
+            )
+        except Exception:
+            logger.warning(
+                "Bulk seen-projects insert failed; falling back to per-id upserts",
+                exc_info=True,
+            )
+            for pid in missing:
+                coll.update_one({"_id": pid}, {"$setOnInsert": {"seen_at": now}}, upsert=True)
     except Exception:
         logger.error("Could not persist seen-projects to MongoDB", exc_info=True)
 

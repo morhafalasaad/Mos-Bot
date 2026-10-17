@@ -1047,7 +1047,49 @@ class ProjectScoreSchema(BaseModel):
     )
 
 
-def score_project(title: str, description: str) -> tuple:
+# Shared by score_project() AND score_projects_batch() so the single-project
+# and batched scoring paths can never drift apart on this rule again — the
+# batch path is the primary one in production (consumer_loop ->
+# process_project_batch -> evaluate_projects_batch).
+_BUDGET_TIMELINE_ADHERENCE_RULE = """BUDGET AND TIMELINE — STRICT ADHERENCE RULE:
+First, check whether the project description itself, or the scraped
+"Client-stated budget" / "Client-stated delivery time" lines (when present),
+state a client budget and/or a client timeframe/deadline.
+- If it does, and that figure is a REASONABLE fit for the scope described,
+  you MUST use that exact client-stated figure as suggested_price/
+  delivery_days — do not inflate, round, or pad it "to be safe."
+- Only override the client's stated figure if it is SEVERELY unrealistic
+  for the scope (not just "a bit tight" or "a bit generous") — in that
+  case use your own realistic estimate instead, set
+  budget_timeline_adjusted=true, and give one short polite Arabic
+  justification in budget_timeline_note.
+- If the client stated no figure at all, use your own realistic estimate
+  and leave budget_timeline_adjusted=false."""
+
+
+def _format_scraped_metadata(budget: Optional[str], duration: Optional[str]) -> str:
+    """
+    Renders the scraped detail-page budget/duration (Project.budget /
+    Project.duration) as prompt lines — "" when neither is available, so
+    callers that only know (title, description) produce exactly the same
+    prompt they always did. These figures often live ONLY in the page's
+    metadata table, not in the description text, so without this Gemini
+    would never see them.
+    """
+    lines = []
+    if budget and str(budget).strip():
+        lines.append(f"Client-stated budget: {str(budget).strip()}")
+    if duration and str(duration).strip():
+        lines.append(f"Client-stated delivery time: {str(duration).strip()}")
+    return "\n".join(lines)
+
+
+def score_project(
+    title: str,
+    description: str,
+    budget: Optional[str] = None,
+    duration: Optional[str] = None,
+) -> tuple:
     """
     Step 1: ask Gemini for a match score, reasoning, a suggested bid price,
     and an estimated delivery time. Returns (data_or_None, call_stats) —
@@ -1065,8 +1107,16 @@ def score_project(title: str, description: str) -> tuple:
     generation can still leave `.parsed` unset) — enforcing at the API
     level AND validating defensively in the app are complementary, not
     redundant.
+
+    `budget` / `duration` (optional) are the figures scraped from the
+    project's detail page (Project.budget / Project.duration). When given,
+    they're included in the prompt so Gemini sees them even if the
+    description text never repeats them. Omitting them reproduces the
+    previous (title, description)-only prompt exactly.
     """
     skills_list = ", ".join(config.MY_SKILLS)
+    metadata_block = _format_scraped_metadata(budget, duration)
+    metadata_section = f"\n{metadata_block}" if metadata_block else ""
 
     prompt = f"""
 You are an expert freelance-bidding assistant. Compare the project below
@@ -1076,7 +1126,7 @@ recommend a realistic bid.
 Freelancer skills: {skills_list}
 
 Project title: {title}
-Project description: {description}
+Project description: {description}{metadata_section}
 
 Evaluate the match and provide a match score, brief reasoning, which of the
 freelancer's OWN listed skills genuinely apply to this project, which
@@ -1084,19 +1134,7 @@ skills/technologies the project needs that are NOT in the freelancer's
 list (if any), a suggested bid price, and an estimated delivery time in
 days.
 
-BUDGET AND TIMELINE — STRICT ADHERENCE RULE:
-First, check whether the project description itself states a client budget
-and/or a client timeframe/deadline.
-- If it does, and that figure is a REASONABLE fit for the scope described,
-  you MUST use that exact client-stated figure as suggested_price/
-  delivery_days — do not inflate, round, or pad it "to be safe."
-- Only override the client's stated figure if it is SEVERELY unrealistic
-  for the scope (not just "a bit tight" or "a bit generous") — in that
-  case use your own realistic estimate instead, set
-  budget_timeline_adjusted=true, and give one short polite Arabic
-  justification in budget_timeline_note.
-- If the client stated no figure at all, use your own realistic estimate
-  and leave budget_timeline_adjusted=false.
+{_BUDGET_TIMELINE_ADHERENCE_RULE}
 """
     start = time.time()
     try:
@@ -1175,6 +1213,23 @@ class _BatchScoreItem(BaseModel):
         ge=1,
         description="Realistic estimated number of days to complete the project based on its scope.",
     )
+    # Mirrors ProjectScoreSchema's fields of the same names — the batched
+    # path is the primary scoring path, so it must carry them too.
+    budget_timeline_adjusted: bool = Field(
+        default=False,
+        description="True ONLY if suggested_price and/or delivery_days above were set to something DIFFERENT "
+                     "from what the client explicitly stated for THIS project, because the stated value was "
+                     "judged severely unrealistic. False whenever the client's stated figure was used as-is, "
+                     "or when the client didn't state a figure at all.",
+    )
+    budget_timeline_note: str = Field(
+        default="",
+        description="Empty string if budget_timeline_adjusted is False. If True, ONE short, polite sentence "
+                     "in Arabic justifying the deviation, suitable for showing the freelancer before they send "
+                     "the proposal, e.g. 'الميزانية المعلنة غير كافية لنطاق العمل الموصوف، وهذا تقدير أقرب "
+                     "للواقع.' — this is NEVER inserted into the proposal text itself, it is only surfaced "
+                     "to the human via Telegram.",
+    )
 
 
 class BatchScoreSchema(BaseModel):
@@ -1193,11 +1248,16 @@ def score_projects_batch(projects: List[dict]) -> tuple:
     biggest lever for staying inside a free-tier daily request quota (RPD)
     when several new projects appear in the same poll cycle. `projects` is
     a list of {"title": str, "description": str} dicts (already truncated
-    by the caller), in a fixed order that the caller cares about.
+    by the caller), in a fixed order that the caller cares about. Each dict
+    may OPTIONALLY also carry "budget" and/or "duration" (the figures
+    scraped from that project's detail page, see Project.budget /
+    Project.duration); when present they're shown to Gemini alongside that
+    project's description. Dicts without them behave exactly as before.
 
     Returns (results_by_index, call_stats):
       - results_by_index: {index: {"match_score", "reasoning",
-        "suggested_price", "delivery_days"}}, one entry per project Gemini
+        "suggested_price", "delivery_days", "budget_timeline_adjusted",
+        "budget_timeline_note", ...}}, one entry per project Gemini
         actually returned a result for. An index MISSING from this dict
         means Gemini dropped that entry — rare, but structured output
         doesn't guarantee every array item survives generation (e.g. the
@@ -1216,10 +1276,12 @@ def score_projects_batch(projects: List[dict]) -> tuple:
         return {}, dict(_EMPTY_CALL_STATS)
 
     skills_list = ", ".join(config.MY_SKILLS)
-    numbered_projects = "\n\n".join(
-        f"[Project index={i}]\nTitle: {p['title']}\nDescription: {p['description']}"
-        for i, p in enumerate(projects)
-    )
+    def _render_project(i: int, p: dict) -> str:
+        block = f"[Project index={i}]\nTitle: {p['title']}\nDescription: {p['description']}"
+        metadata_block = _format_scraped_metadata(p.get("budget"), p.get("duration"))
+        return f"{block}\n{metadata_block}" if metadata_block else block
+
+    numbered_projects = "\n\n".join(_render_project(i, p) for i, p in enumerate(projects))
     prompt = f"""
 You are an expert freelance-bidding assistant. Below are {len(projects)}
 separate freelance projects, each labeled with its own index. Evaluate
@@ -1235,6 +1297,11 @@ which of the freelancer's OWN listed skills genuinely apply to it, which
 skills/technologies it needs that are NOT in the freelancer's list (if
 any), a suggested bid price, and an estimated delivery time in days.
 Return exactly {len(projects)} results — one per index, none skipped or repeated.
+
+{_BUDGET_TIMELINE_ADHERENCE_RULE}
+Apply this rule to EACH project independently, using only that project's
+own description and Client-stated lines, and fill budget_timeline_adjusted
+and budget_timeline_note on that project's own result entry.
 """
     start = time.time()
     try:
@@ -1690,9 +1757,12 @@ def evaluate_project(
     tags: Optional[List[str]] = None,
     client_info: Optional[dict] = None,
     screening_questions: Optional[List[str]] = None,
+    duration: Optional[str] = None,
 ) -> Evaluation:
     """
-    Full pipeline for one project:
+    Full pipeline for one project (`budget`/`duration` are the figures
+    scraped from the project's detail page; both are optional and, when
+    given, are shown to Gemini during scoring — see score_project):
       0. Local tag pre-filter — zero-cost skip if tags exist and don't
          overlap with config.MY_SKILLS at all.
       1. Score-cache lookup — zero-cost skip of the Gemini scoring call if
@@ -1745,7 +1815,7 @@ def evaluate_project(
         )
         score_data, score_stats = cached, dict(_EMPTY_CALL_STATS)
     else:
-        score_data, score_stats = score_project(title, scoring_desc)
+        score_data, score_stats = score_project(title, scoring_desc, budget=budget, duration=duration)
         if score_data is not None:
             _score_cache.set(title, description, score_data)
 
@@ -1773,7 +1843,11 @@ def evaluate_projects_batch(projects: List[dict]) -> List[Evaluation]:
     this still collapses what used to be N scoring calls into 1.
 
     `projects` is a list of dicts shaped like {"title", "description",
-    "budget", "tags"}. Returns a list of Evaluation objects in the EXACT
+    "budget", "tags"}, optionally also carrying "duration", "client_info"
+    and "screening_questions". "budget"/"duration" (the scraped detail-page
+    figures) are forwarded to Gemini in the scoring prompt when present;
+    both are optional, so callers passing only title/description keep
+    working unchanged. Returns a list of Evaluation objects in the EXACT
     same order/length as the input, so callers can zip() it against their
     own project objects.
 
@@ -1836,7 +1910,12 @@ def evaluate_projects_batch(projects: List[dict]) -> List[Evaluation]:
             continue
 
         batch_positions[i] = len(to_score)
-        to_score.append({"title": p["title"], "description": scoring_descs[i]})
+        to_score.append({
+            "title": p["title"],
+            "description": scoring_descs[i],
+            "budget": p.get("budget"),
+            "duration": p.get("duration"),
+        })
 
     if to_score:
         score_results, batch_stats = score_projects_batch(to_score)

@@ -335,10 +335,17 @@ MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "60"))
 # always the FLOOR the effective threshold ramps up FROM, never below it.
 ADAPTIVE_THRESHOLD_ENABLED = os.getenv("ADAPTIVE_THRESHOLD_ENABLED", "true").strip().lower() == "true"
 # Rough total daily request budget across ALL configured keys combined.
-# Free tier is commonly ~20 requests/day per key for gemini-3.5-flash (see
-# the POLL_INTERVAL note below) — defaults to that figure times however
-# many keys are configured; override directly if your actual tier differs.
-GEMINI_ESTIMATED_DAILY_QUOTA = int(os.getenv("GEMINI_ESTIMATED_DAILY_QUOTA", str(20 * max(len(GEMINI_API_KEYS), 1))))
+# The default is sized for the model-major cascade's PRIMARY tier (see
+# GEMINI_MODEL_CASCADE / MODEL_RPD_LIMITS further below and
+# gemini_client.py): the two "-lite" primary models each allow ~500
+# requests/day per key, and requests only spill over to the ~20 RPD
+# fallback models once those are exhausted. So the default is 500 times
+# however many keys are configured. (It used to be 20 per key — a figure
+# sized for a single 20-RPD model — which made the adaptive threshold ramp
+# to its hard cap after only 14-20 requests, long before any real quota
+# pressure.) Override directly if your actual tier differs; keep it in
+# line with MODEL_RPD_LIMITS' primary-model figure (GEMINI_RPD_FLASH_LITE_35).
+GEMINI_ESTIMATED_DAILY_QUOTA = int(os.getenv("GEMINI_ESTIMATED_DAILY_QUOTA", str(500 * max(len(GEMINI_API_KEYS), 1))))
 # Ramping starts once today's usage crosses this fraction of the estimated
 # quota (0.7 = starts tightening at 70% used) and reaches the hard cap at
 # 100%+ used.

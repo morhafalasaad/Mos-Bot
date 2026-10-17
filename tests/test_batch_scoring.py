@@ -158,3 +158,54 @@ def test_cached_project_is_excluded_from_the_batch_call(monkeypatch, make_fake_r
 
     assert len(batch_calls) == 1  # only ONE batch call, covering A and C
     assert results[1].reasoning == "cached-ok"  # B's result came from the cache, not the batch
+
+
+def test_budget_timeline_fields_and_scraped_metadata_reach_batch_evaluation(monkeypatch, make_fake_response):
+    """End-to-end through evaluate_projects_batch: the scraped budget/
+    duration appear in the ONE batched scoring prompt, and the
+    budget_timeline_adjusted/note Gemini returns end up on the Evaluation."""
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "MATCH_THRESHOLD", 200)  # isolate scoring; no proposal calls
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", False)
+    seen = {}
+
+    def fake_generate(prompt, response_schema=None, **kw):
+        seen["prompt"] = prompt
+        return make_fake_response(parsed=ai_agent.BatchScoreSchema(results=[
+            ai_agent._BatchScoreItem(
+                index=0, match_score=80, reasoning="ok", suggested_price="$400", delivery_days=20,
+                budget_timeline_adjusted=True, budget_timeline_note="المدة المعلنة قصيرة جداً.",
+            ),
+        ]))
+
+    monkeypatch.setattr(ai_agent, "_generate", fake_generate)
+
+    results = ai_agent.evaluate_projects_batch([
+        {"title": "A", "description": "python scraper", "budget": "$50", "duration": "يومان", "tags": []},
+    ])
+
+    assert "$50" in seen["prompt"]
+    assert "يومان" in seen["prompt"]
+    assert "BUDGET AND TIMELINE" in seen["prompt"]
+    assert results[0].budget_timeline_adjusted is True
+    assert results[0].budget_timeline_note == "المدة المعلنة قصيرة جداً."
+
+
+def test_batch_without_budget_or_duration_keys_still_works(monkeypatch, make_fake_response):
+    """Backward compat: dicts carrying ONLY title/description (no budget,
+    duration or tags keys at all) must still be scored."""
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "MATCH_THRESHOLD", 200)
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", False)
+
+    def fake_generate(prompt, response_schema=None, **kw):
+        return make_fake_response(parsed=ai_agent.BatchScoreSchema(results=[
+            ai_agent._BatchScoreItem(index=0, match_score=77, reasoning="ok", suggested_price="$1", delivery_days=1),
+        ]))
+
+    monkeypatch.setattr(ai_agent, "_generate", fake_generate)
+
+    results = ai_agent.evaluate_projects_batch([{"title": "A", "description": "python"}])
+
+    assert results[0].ai_failed is False
+    assert results[0].match_score == 77.0

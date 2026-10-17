@@ -5,8 +5,15 @@ tag-based check and the title/description fallback used when no tags are
 available.
 """
 
+import queue
+from types import SimpleNamespace
+
+import pytest
+
 import ai_agent
 import config
+import main
+import scraper
 
 
 def test_tag_overlap_passes(monkeypatch):
@@ -92,3 +99,84 @@ def test_evaluate_project_still_scores_relevant_untagged_project(monkeypatch, ma
     )
     assert len(calls) >= 1
     assert result.match_score == 80.0
+
+
+# ---------------------------------------------------------------------------
+# Producer loop — must apply the FULL local pre-filter (tags AND the
+# title/description fallback) BEFORE enqueuing, so irrelevant untagged
+# projects never consume consumer batch slots.
+# ---------------------------------------------------------------------------
+
+class _StopProducer(Exception):
+    """Raised from the stubbed safe_sleep to break out of producer_loop's
+    otherwise-infinite `while True` after exactly one scrape iteration."""
+
+
+def _scraped(pid, title, description, tags=None):
+    return SimpleNamespace(
+        id=pid, title=title, description=description, tags=tags or [],
+        url=f"https://mostaql.com/project/{pid}-x", budget=None, duration=None,
+        client_warning=None, client_info=None, screening_questions=[],
+    )
+
+
+def _run_one_producer_iteration(monkeypatch, projects):
+    q = queue.Queue()
+    monkeypatch.setattr(main, "task_queue", q)
+    monkeypatch.setattr(scraper, "get_new_projects", lambda: list(projects))
+
+    def stop(*a, **kw):
+        raise _StopProducer()
+
+    monkeypatch.setattr(main, "safe_sleep", stop)
+    with pytest.raises(_StopProducer):
+        main.producer_loop()
+    return [q.get_nowait() for _ in range(q.qsize())]
+
+
+def test_producer_skips_untagged_irrelevant_project_when_title_prefilter_enabled(monkeypatch):
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", True)
+
+    irrelevant = _scraped("1", "Design a wedding invitation", "Need creative graphic design for a wedding card")
+    relevant = _scraped("2", "Need a Python developer", "Build a python automation script")
+
+    enqueued = _run_one_producer_iteration(monkeypatch, [irrelevant, relevant])
+
+    assert [p.id for p in enqueued] == ["2"]
+
+
+def test_producer_enqueues_untagged_project_when_title_prefilter_disabled(monkeypatch):
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", False)
+
+    irrelevant = _scraped("1", "Design a wedding invitation", "Need creative graphic design for a wedding card")
+
+    enqueued = _run_one_producer_iteration(monkeypatch, [irrelevant])
+
+    assert [p.id for p in enqueued] == ["1"]  # prefilter is a no-op for untagged projects when disabled
+
+
+def test_producer_still_skips_tagged_project_with_no_skill_overlap(monkeypatch):
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", True)
+
+    tagged_irrelevant = _scraped("1", "Python scraper", "python", tags=["graphic-design"])
+    tagged_relevant = _scraped("2", "Logo", "logo", tags=["python-dev"])
+
+    enqueued = _run_one_producer_iteration(monkeypatch, [tagged_irrelevant, tagged_relevant])
+
+    # Tags are authoritative: the first is skipped despite a matching title,
+    # the second passes despite an unrelated title.
+    assert [p.id for p in enqueued] == ["2"]
+
+
+def test_producer_fails_open_for_untagged_project_with_no_text(monkeypatch):
+    monkeypatch.setattr(config, "MY_SKILLS", ["python"])
+    monkeypatch.setattr(config, "TITLE_PREFILTER_ENABLED", True)
+
+    blank = _scraped("1", "", "")
+
+    enqueued = _run_one_producer_iteration(monkeypatch, [blank])
+
+    assert [p.id for p in enqueued] == ["1"]

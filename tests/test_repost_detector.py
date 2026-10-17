@@ -107,3 +107,69 @@ def test_backend_error_degrades_to_no_warning_and_never_raises(monkeypatch):
 
 def test_empty_title_and_description_returns_none():
     assert repost_detector.check_and_record("proj_x", "", "") is None
+
+
+# ---------------------------------------------------------------------------
+# Telegram legacy-Markdown safety of the warning string. An unescaped `_`,
+# `*`, `` ` `` or `[` inside the interpolated title makes Telegram reject
+# the whole message (HTTP 400), forcing the plain-text fallback.
+# ---------------------------------------------------------------------------
+
+def _unescaped_specials(text: str) -> dict:
+    """Counts each legacy-Markdown special character that is NOT preceded by
+    a backslash escape."""
+    import re
+    without_escaped = re.sub(r"\\.", "", text)
+    return {ch: without_escaped.count(ch) for ch in ("_", "*", "`", "[")}
+
+
+def test_warning_escapes_underscores_and_asterisks_in_title():
+    special_title = "Need scraper_v2 built *urgently* for my_shop"
+    repost_detector.check_and_record("proj_001", special_title, DESC)
+
+    warning = repost_detector.check_and_record("proj_002", special_title, DESC)
+
+    assert warning is not None
+    assert "scraper\\_v2" in warning
+    assert "\\*urgently\\*" in warning
+    assert "my\\_shop" in warning
+    # The only unescaped specials left are the two `*` of the bold header.
+    assert _unescaped_specials(warning) == {"_": 0, "*": 2, "`": 0, "[": 0}
+
+
+def test_warning_escapes_backticks_and_brackets_in_title():
+    special_title = "Fix `main.py` crash [phase 1] in python scraper"
+    repost_detector.check_and_record("proj_001", special_title, DESC)
+
+    warning = repost_detector.check_and_record("proj_002", special_title, DESC)
+
+    assert warning is not None
+    assert "\\`main.py\\`" in warning
+    assert "\\[phase 1]" in warning
+    assert _unescaped_specials(warning) == {"_": 0, "*": 2, "`": 0, "[": 0}
+
+
+def test_warning_with_plain_title_is_unchanged_by_escaping():
+    repost_detector.check_and_record("proj_001", TITLE, DESC)
+
+    warning = repost_detector.check_and_record("proj_002", TITLE, DESC)
+
+    assert warning is not None
+    assert f"مع: {TITLE})" in warning  # nothing to escape, so the title appears verbatim
+    assert "\\" not in warning
+
+
+def test_repost_warning_with_missing_title_does_not_raise():
+    """A history entry lacking a title (title=None) must still yield a
+    well-formed warning rather than raising or printing 'None'."""
+    db.get_collection("repost_history").insert_one({
+        "project_id": "old_1",
+        "title": None,
+        "normalized_text": repost_detector._normalize(f"{TITLE} {DESC}"),
+        "recorded_at": datetime.now(timezone.utc),
+    })
+
+    warning = repost_detector.check_and_record("new_1", TITLE, DESC)
+
+    assert warning is not None
+    assert "None" not in warning

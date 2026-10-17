@@ -76,7 +76,6 @@ import certifi
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
-import concurrent.futures
 import json
 import logging
 import queue
@@ -139,10 +138,6 @@ import db
 # unbounded in memory — acceptable for Mostaql's realistic project volume.
 task_queue = queue.Queue(maxsize=config.TASK_QUEUE_MAXSIZE)
 
-# Single-worker executor used ONLY to enforce a hard per-batch timeout
-# around each Gemini evaluation batch — see process_batch_with_watchdog.
-_eval_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="eval-watchdog")
-
 
 # ---------------------------------------------------------------------------
 # GitHub retry workers (unchanged in behavior from the previous version —
@@ -185,6 +180,7 @@ def retry_pending_queue():
                 tags=entry.get("tags") or [],
                 client_info=entry.get("client_info"),
                 screening_questions=entry.get("screening_questions") or [],
+                duration=entry.get("duration"),
             )
         except Exception:
             logger.error(
@@ -303,6 +299,7 @@ def retry_open_github_issues():
                 description=parsed.get("description", ""),
                 budget=parsed.get("budget"),
                 tags=parsed.get("tags") or [],
+                duration=parsed.get("duration"),
             )
         except Exception:
             logger.error(
@@ -474,6 +471,7 @@ def process_project_batch(projects):
     batch_input = [
         {
             "title": p.title, "description": p.description, "budget": p.budget,
+            "duration": getattr(p, "duration", None),
             "tags": p.tags, "client_info": p.client_info,
             "screening_questions": getattr(p, "screening_questions", None) or [],
         }
@@ -500,6 +498,15 @@ def process_batch_with_watchdog(projects):
     rather than silently disappearing, and the consumer thread moves on
     instead of stalling forever.
 
+    Each batch runs in its OWN fresh daemon thread. This used to go through
+    a module-level single-worker ThreadPoolExecutor, which meant a batch
+    that timed out left its hung thread occupying the pool's only worker
+    — so EVERY later batch queued behind it and (since the consumer only
+    ever waits CYCLE_TIMEOUT for each) timed out too, wedging the consumer
+    permanently. With a thread per batch, an abandoned thread is simply
+    left to finish (or hang) on its own: it can't block anything, and as a
+    daemon it can't keep the process alive at shutdown either.
+
     Trade-off vs. the old per-project watchdog: a stuck call now risks
     abandoning up to GEMINI_SCORE_BATCH_SIZE projects at once instead of
     just one. Kept acceptable by the default batch size being modest (5)
@@ -507,10 +514,19 @@ def process_batch_with_watchdog(projects):
     trade batching itself makes (fewer, larger calls) applied consistently
     to the failure path too.
     """
-    future = _eval_executor.submit(process_project_batch, projects)
-    try:
-        future.result(timeout=config.CYCLE_TIMEOUT)
-    except concurrent.futures.TimeoutError:
+    outcome = {}
+
+    def _run():
+        try:
+            process_project_batch(projects)
+        except BaseException as exc:  # noqa: BLE001 — surfaced to the caller below, never lost in a worker thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_run, name="eval-watchdog", daemon=True)
+    worker.start()
+    worker.join(timeout=config.CYCLE_TIMEOUT)
+
+    if worker.is_alive():
         logger.error(
             "Batch evaluation of %s project(s) exceeded the %ss task timeout "
             "and was abandoned — treating all of them as AI-unavailable so "
@@ -523,10 +539,11 @@ def process_batch_with_watchdog(projects):
                 handle_ai_unavailable(project, reason=f"Batch evaluation task exceeded {config.CYCLE_TIMEOUT}s timeout")
         except Exception:
             logger.error("Fallback handling after batch timeout also failed:\n%s", traceback.format_exc())
-    except Exception:
+    elif "error" in outcome:
+        exc = outcome["error"]
         logger.error(
             "Unexpected error while processing a batch of %s project(s):\n%s",
-            len(projects), traceback.format_exc(),
+            len(projects), "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         )
 
 
@@ -547,13 +564,18 @@ def producer_loop():
             logger.info("Producer: found %s new project(s) this scrape", len(new_projects))
 
             for project in new_projects:
-                # Local tag pre-filter here (zero Gemini cost) — matches
+                # FULL local pre-filter here (zero Gemini cost) — matches
                 # the "Scraper applies local filters, and if a project
-                # passes, puts it into the queue" requirement. Fail-open:
-                # empty/missing tags still get queued (ai_agent's own
-                # prefilter check inside evaluate_project applies the same
-                # fail-open rule, so this is consistent either way).
-                if project.tags and not ai_agent.local_skill_prefilter(project.tags):
+                # passes, puts it into the queue" requirement. Uses the
+                # exact same call as ai_agent.evaluate_project()/
+                # evaluate_projects_batch(): tags first (authoritative when
+                # present), then the title/description fallback (when
+                # config.TITLE_PREFILTER_ENABLED) for UNTAGGED projects —
+                # otherwise irrelevant untagged projects would burn batch
+                # slots on the consumer before being filtered there. The
+                # prefilter itself is fail-open when there's nothing to
+                # judge by, so such projects still get queued.
+                if not ai_agent.local_skill_prefilter(project.tags, project.title, project.description):
                     logger.info(
                         "Producer: local pre-filter skip '%s' (tags: %s) — zero Gemini cost",
                         project.title, project.tags,

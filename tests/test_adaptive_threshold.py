@@ -162,3 +162,34 @@ def test_only_successful_calls_increment_the_counter(monkeypatch, make_fake_resp
     except Exception:
         pass
     assert ai_agent._daily_request_tracker.get_today_count() == 1  # unchanged
+
+
+# ---- Default estimated daily quota ------------------------------------------
+
+def test_default_estimated_quota_is_sized_for_the_primary_cascade_tier():
+    """The default must reflect the primary "-lite" models' ~500 RPD per key
+    (not the ~20 RPD of a single fallback model), otherwise the adaptive
+    threshold ramps to its hard cap after only a handful of requests."""
+    import os
+    if os.getenv("GEMINI_ESTIMATED_DAILY_QUOTA"):
+        import pytest
+        pytest.skip("GEMINI_ESTIMATED_DAILY_QUOTA is overridden via the environment")
+
+    assert config.GEMINI_ESTIMATED_DAILY_QUOTA == 500 * max(len(config.GEMINI_API_KEYS), 1)
+
+
+def test_default_quota_does_not_ramp_threshold_after_a_few_requests(monkeypatch):
+    """With the default quota, 20 requests used (the old default's entire
+    budget) must still leave the threshold at its base value."""
+    import os
+    if os.getenv("GEMINI_ESTIMATED_DAILY_QUOTA"):
+        import pytest
+        pytest.skip("GEMINI_ESTIMATED_DAILY_QUOTA is overridden via the environment")
+
+    monkeypatch.setattr(config, "MATCH_THRESHOLD", 60)
+    monkeypatch.setattr(config, "ADAPTIVE_THRESHOLD_ENABLED", True)
+    monkeypatch.setattr(config, "ADAPTIVE_THRESHOLD_TRIGGER_RATIO", 0.7)
+    monkeypatch.setattr(config, "ADAPTIVE_THRESHOLD_HARD_CAP", 90)
+    _set_today_count(monkeypatch, 20)
+
+    assert ai_agent.get_effective_match_threshold() == 60

@@ -996,8 +996,12 @@ def get_new_projects() -> List[Project]:
             )
 
         if new_projects:
-            seen.update(p.id for p in new_projects)
-            _save_seen(seen)
+            # Persist ONLY this cycle's newly discovered ids. Passing the
+            # whole historical `seen` set used to rewrite every old
+            # document (N round-trips) and reset its TTL clock each cycle.
+            new_ids = [p.id for p in new_projects]
+            seen.update(new_ids)
+            _save_seen(new_ids)
 
             if config.FETCH_PROJECT_TAGS:
                 for project in new_projects:
