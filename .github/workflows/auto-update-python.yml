@@ -3,8 +3,21 @@ name: Auto-update Python version
 # Weekly check for a newer STABLE Python minor series than the one
 # currently pinned in .python-version / runtime.txt, and opens a PR
 # bumping both if one exists. tests.yml's own `pull_request` trigger runs
-# all 183 tests against the PR automatically — nothing extra is needed
-# here to wire that up.
+# all 183 tests against the PR — BUT ONLY IF the PR is opened with a
+# personal access token, not the built-in GITHUB_TOKEN. GitHub deliberately
+# does not start other workflows for events caused by GITHUB_TOKEN (to
+# prevent recursive runs), so a PR opened with it sits with NO checks.
+#
+# ONE-TIME SETUP for tests to run automatically on the bump PR:
+#   1. Create a fine-grained personal access token limited to this repo
+#      with "Contents: Read and write" and "Pull requests: Read and write".
+#   2. Save it as a repository secret named PR_BOT_TOKEN
+#      (Settings -> Secrets and variables -> Actions).
+# Until that secret exists the workflow falls back to GITHUB_TOKEN and still
+# opens the PR, but you must close and reopen the PR once to start `Tests`.
+#
+# Also required: Settings -> Actions -> General -> "Allow GitHub Actions to
+# create and approve pull requests".
 #
 # SOURCE OF TRUTH: actions/python-versions' versions-manifest.json — this
 # is the SAME manifest actions/setup-python itself reads to resolve a
@@ -134,7 +147,9 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PR_BOT_TOKEN (a PAT) makes the PR trigger tests.yml; falls back to
+          # GITHUB_TOKEN, which opens the PR but starts no checks (see header).
+          token: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           commit-message: "Bump Python to ${{ steps.latest.outputs.version }}"
           branch: "auto-update/python-${{ steps.latest.outputs.version }}"
           delete-branch: true
@@ -165,7 +180,10 @@ jobs:
             `README.md` for why this project treats a Python series bump
             as review-worthy rather than merging it unattended by default.
 
-            Please wait for `Tests` to go green below, then review and
+            Please wait for `Tests` to go green below (if no checks appear,
+            the PR was opened with GITHUB_TOKEN — close and reopen it once,
+            or add the `PR_BOT_TOKEN` secret described at the top of this
+            workflow), then review and
             merge — or see this workflow's own comments for how to enable
             unattended auto-merge if you'd rather opt into that.
 
