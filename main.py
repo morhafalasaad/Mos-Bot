@@ -76,6 +76,12 @@ import certifi
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
+# Fail closed if a cached/stale certifi still trusts the compromised eMudhra
+# chain (see security_check.py). Logging isn't configured yet, so this only
+# raises here; the OK/CRITICAL lines are emitted again in main().
+import security_check
+security_check.check_environment()
+
 import json
 import logging
 import queue
@@ -110,15 +116,18 @@ class FlushingStreamHandler(logging.StreamHandler):
         self.flush()
 
 
+import secure_logging
+
+_log_handler = FlushingStreamHandler(sys.stdout)
+# Redacts bot token / API keys / URL credentials from every line, including
+# tracebacks and urllib3 DEBUG output (see secure_logging.py for why).
+# Short, scannable format: time + level + message.
+_log_handler.setFormatter(secure_logging.RedactingFormatter(
+    "%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S",
+))
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
-    # Short, scannable format: time + level + message. Thread/module names
-    # were dropped — nearly every message already states which part of the
-    # app it's from ("Producer:", "Consumer:", "Gemini key #N", etc.), so
-    # repeating that context in every line's prefix was pure noise.
-    format="%(asctime)s %(levelname)-7s %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[FlushingStreamHandler(sys.stdout)],
+    handlers=[_log_handler],
 )
 logger = logging.getLogger("main")
 
@@ -958,6 +967,7 @@ def telegram_feedback_loop():
 
 def main():
     logger.info("Starting Mostaql AI Freelance Assistant worker (producer/consumer architecture)...")
+    security_check.check_environment()  # logs the trust-store result to Render
     logger.info(
         "Match threshold: %s%% | Gemini timeout: %ss | Local RPM cap/key: %s | "
         "Task queue max size: %s | Score batch size: %s (max wait %ss) | "

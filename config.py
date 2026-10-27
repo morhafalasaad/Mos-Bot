@@ -21,6 +21,12 @@ except ImportError:
 def _require(name: str, default: str | None = None) -> str:
     """Fetch an env var, raising a clear error early if a critical one is missing."""
     value = os.getenv(name, default)
+    # Blank counts as missing: copying .env.example (KEY=) or leaving a
+    # Render env var empty must not start the bot with an empty secret.
+    if value is not None:
+        value = value.strip()
+    if not value:
+        value = None
     if value is None:
         raise EnvironmentError(
             f"Missing required environment variable: {name}. "
