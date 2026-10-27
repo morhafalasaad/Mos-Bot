@@ -1,0 +1,15 @@
+# Security floors (Oct 2026 advisories). Applied via `-c constraints.txt` in
+# requirements.txt. A constraint never INSTALLS a package; it only forbids
+# older versions if something pulls the package in.
+#
+# eMudhra CA key compromise (Render advisory): certifi >= 2026.10.19
+certifi>=2026.10.23
+# Network stack, current releases as of 2026-10-27
+requests>=2.34.2
+urllib3>=2.8.0
+httpx>=0.28.1
+cryptography>=50.0.2
+# Brotli decoder RCE CVE-2026-111497 (PYSEC-2026-4322 / 4323). Not installed
+# by this project today; floor keeps a vulnerable copy from ever resolving.
+Brotli>=1.2.1
+brotlicffi>=1.2.1.0

@@ -91,6 +91,7 @@ from google.genai import types
 import config
 import db
 import gemini_client
+import secure_logging
 from gemini_client import (
     AllKeysExhaustedError,  # noqa: F401  (back-compat alias, see below)
     AllKeysRateLimited,     # noqa: F401  (back-compat alias, see below)
@@ -143,7 +144,7 @@ if config.GEMINI_PROXY_URL:
     logger.info(
         "Gemini: routing ONLY Gemini API traffic through proxy %s "
         "(scraper/Telegram/GitHub traffic is unaffected and stays direct).",
-        config.GEMINI_PROXY_URL,
+        secure_logging.mask_url_credentials(config.GEMINI_PROXY_URL),  # never log user:pass
     )
 
 
