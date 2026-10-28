@@ -45,6 +45,8 @@ pytest tests/test_batch_scoring.py::test_batch_scoring_reduces_call_count -v
 | `test_seen_projects.py` | `scraper.get_new_projects` persisting only newly discovered ids, and `db.mark_seen`'s insert-if-missing bulk write (no TTL reset of existing documents, fallback path, never raises) |
 | `test_main_duration_threading.py` | `main.py` threading each project's scraped `duration` (and `budget`) into `evaluate_projects_batch` / `evaluate_project` from the normal path, the MongoDB retry queue and the GitHub-issue retry |
 | `test_watchdog.py` | `main.process_batch_with_watchdog`: a timed-out batch falls back for every project without blocking the next batch; exceptions are logged, not raised |
+| `test_telegram_retry.py` | `notifier.send_telegram_message` exponential backoff (2/4/8/16s): retries 5xx/429/timeouts/connection resets, gives up without raising after the last retry, never retries non-transient 4xx, keeps the 400 plain-text fallback — all with mocked `requests.post` and no real sleeping |
+| `test_health_endpoint.py` | `/health` active MongoDB ping: 200 `ok/connected` vs 503 `degraded/disconnected` (error class only, no secrets), exercised over a real loopback HTTP server; `/` stays DB-independent |
 | `test_env_example.py` | `.env.example` exists, lists every required variable, documents the key optional tunables, parses with `python-dotenv`, and only names variables `config.py` actually reads |
 | `test_incident_regressions.py` | Regression coverage for the retired `gemini-2.5-flash-lite` model and the Telegram 409 Conflict handling fix |
 

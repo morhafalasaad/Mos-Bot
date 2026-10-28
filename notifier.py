@@ -49,6 +49,8 @@ other notification flow in this file.
 import json
 import logging
 
+import time
+
 import requests
 
 import config
@@ -251,6 +253,51 @@ def notify_pending_project(
     send_telegram_message(message, reply_markup=build_inline_keyboard(url))
 
 
+# Injection point so tests can skip real waiting.
+_sleep = time.sleep
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """5xx (502/503/504 Bad Gateway/Unavailable/Timeout, etc.) and 429
+    (Telegram flood control) are transient; other 4xx are our fault."""
+    return status_code >= 500 or status_code == 429
+
+
+def _post_with_backoff(payload: dict):
+    """
+    POSTs `payload` to Telegram, retrying transient failures with
+    exponential backoff (config.TELEGRAM_RETRY_DELAYS, default 2/4/8/16s).
+
+    Returns the final `requests.Response` (which may still be a 5xx if
+    retries were exhausted), or None if every attempt raised a transport
+    error (timeout / connection reset). Never raises for those.
+    """
+    delays = config.TELEGRAM_RETRY_DELAYS
+    total_attempts = len(delays) + 1
+    resp = None
+    for attempt in range(1, total_attempts + 1):
+        reason = None
+        try:
+            resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
+            if not _is_retryable_status(resp.status_code):
+                return resp
+            reason = f"HTTP {resp.status_code}"
+        except requests.exceptions.RequestException as exc:
+            resp = None
+            reason = f"{type(exc).__name__}"
+
+        if attempt < total_attempts:
+            delay = delays[attempt - 1]
+            logger.warning(
+                "Telegram send attempt %d/%d failed (%s); retrying in %ss",
+                attempt, total_attempts, reason, delay,
+            )
+            _sleep(delay)
+        else:
+            logger.error("Telegram send failed after %d attempts (%s); giving up", total_attempts, reason)
+    return resp
+
+
 def send_telegram_message(text: str, reply_markup: dict = None) -> bool:
     """Send a message to the configured chat, optionally with an inline
     keyboard. Returns True on success, never raises."""
@@ -271,7 +318,9 @@ def send_telegram_message(text: str, reply_markup: dict = None) -> bool:
         payload["reply_markup"] = json.dumps(reply_markup)
 
     try:
-        resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
+        resp = _post_with_backoff(payload)
+        if resp is None:
+            return False  # transport failure after all retries (already logged)
         if resp.status_code == 200:
             logger.info("Telegram notification sent successfully")
             return True
@@ -282,13 +331,13 @@ def send_telegram_message(text: str, reply_markup: dict = None) -> bool:
         # retry since we only remove parse_mode from the same payload dict.
         if resp.status_code == 400:
             payload.pop("parse_mode", None)
-            retry_resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=config.REQUEST_TIMEOUT)
-            if retry_resp.status_code == 200:
+            retry_resp = _post_with_backoff(payload)
+            if retry_resp is not None and retry_resp.status_code == 200:
                 logger.info("Telegram notification sent successfully (plain-text fallback)")
                 return True
-            logger.error("Telegram retry also failed: %s", retry_resp.text[:300])
+            logger.error("Telegram retry also failed: %s", retry_resp.text[:300] if retry_resp is not None else "no response")
         return False
-    except requests.exceptions.RequestException as exc:
+    except Exception as exc:  # never let an alert failure crash the batch loop
         logger.error("Telegram request failed: %s", exc)
         return False
 

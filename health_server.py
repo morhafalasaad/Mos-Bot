@@ -14,7 +14,12 @@ blocking bot loop, Render's port scan would time out during boot. Doing it
 in a daemon thread lets both run concurrently and independently — a hang in
 one cannot block the other.
 
-Two endpoints:
+Three endpoints:
+  - `/health` — active dependency check for uptime monitors: pings
+    MongoDB and returns 200 {"status": "ok", "db": "connected"} or 503
+    {"status": "degraded", "db": "disconnected", "error": ...}. Point
+    UptimeRobot here (not at `/`) so a database dropout is alerted
+    before scraping starts failing.
   - `/` (or anything else) — the ORIGINAL fast plain-text 200. Kept
     deliberately trivial and dependency-free, since this is what Render's
     port scan hits; it must never be slowed down or risk failing just
@@ -142,10 +147,32 @@ def get_status_snapshot() -> dict:
     return snapshot
 
 
+def check_database() -> tuple:
+    """
+    Actively pings MongoDB. Returns (http_status, body_dict):
+    (200, {"status": "ok", "db": "connected"}) when reachable, otherwise
+    (503, {"status": "degraded", "db": "disconnected", "error": <class name>}).
+
+    Never raises. Only the exception CLASS is exposed in the response
+    (this endpoint is public); the full message goes to the log. Bounded
+    by config.MONGODB_TIMEOUT_MS via the client's serverSelectionTimeoutMS.
+    """
+    try:
+        import db
+        db.get_db().client.admin.command("ping")
+        return 200, {"status": "ok", "db": "connected"}
+    except Exception as exc:
+        logger.warning("Health check: MongoDB ping failed: %s", exc)
+        return 503, {"status": "degraded", "db": "disconnected", "error": type(exc).__name__}
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/status"):
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/status"):
             self._handle_status()
+        elif path.rstrip("/") == "/health":
+            self._handle_health()
         else:
             self._handle_root()
 
@@ -154,6 +181,19 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Mostaql AI Freelance Assistant worker is running.\n")
+
+    def _handle_health(self):
+        try:
+            status, payload = check_database()
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:
+            logger.error("Failed to serve /health", exc_info=True)
+            self.send_response(503)
+            self.end_headers()
 
     def _handle_status(self):
         try:

@@ -388,6 +388,23 @@ SEEN_PROJECTS_TTL_DAYS = int(os.getenv("SEEN_PROJECTS_TTL_DAYS", "60"))
 
 # ---- Networking / anti-ban -----------------------------------------------------
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "20"))       # requests (scraper/telegram)
+
+def _parse_delays(raw: str, default: tuple) -> tuple:
+    """Comma-separated seconds -> tuple of floats; falls back to `default`
+    on any malformed/negative value rather than crashing at import."""
+    try:
+        values = tuple(float(x) for x in raw.split(",") if x.strip())
+        if values and all(v >= 0 for v in values):
+            return values
+    except ValueError:
+        pass
+    return default
+
+
+# Exponential backoff between Telegram send attempts on transient failures
+# (HTTP 5xx / 429 / timeouts / connection resets). One entry per retry, so
+# the default "2,4,8,16" means 1 initial try + up to 4 retries.
+TELEGRAM_RETRY_DELAYS = _parse_delays(os.getenv("TELEGRAM_RETRY_DELAYS", "2,4,8,16"), (2.0, 4.0, 8.0, 16.0))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
 # ---- Gemini call timeout (seconds) ---------------------------------------------
