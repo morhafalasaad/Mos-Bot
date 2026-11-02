@@ -41,3 +41,10 @@ updates:
       python-dependencies:
         patterns:
           - "*"
+    ignore:
+      # google-genai 2.34.0 requires tenacity>=8.2.3,<9.2.0, so a tenacity
+      # 9.2+ bump makes pip fail with ResolutionImpossible (this broke
+      # PR #112's first CI run). Remove this rule once google-genai allows
+      # tenacity 9.2+.
+      - dependency-name: "tenacity"
+        versions: [">=9.2.0"]
