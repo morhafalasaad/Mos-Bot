@@ -16,8 +16,9 @@
 # dependency drops support for your current Python version (see its
 # "Python version" reporting), but it never opens a PR raising the Python
 # version your project targets. Bumping .python-version + runtime.txt to
-# a newer CPython series (e.g. 3.14 -> 3.15 once 3.15 is stable and every
-# pinned dependency below supports it) stays a deliberate, manual edit —
+# a newer CPython series stays a deliberate, manual edit. NOTE (Nov 2026):
+# the project is pinned to 3.14 because Dependabot's pip updater does not
+# support 3.15 yet (tool_version_not_supported); revisit once it does —
 # push it and .github/workflows/tests.yml runs all 183 tests against it
 # automatically before you'd merge, but nothing currently opens that PR
 # for you unannounced.
