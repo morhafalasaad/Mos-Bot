@@ -56,13 +56,16 @@ name: Auto-update Python version
 # needed, so a patch-only bump would be a PR with nothing to actually
 # change.
 
+# PAUSED (Nov 2026): the project is pinned to Python 3.14 on purpose.
+# Dependabot's pip updater does not support 3.15 yet ("tool_version_not_supported"),
+# so the 3.15 bump (#108) broke weekly dependency PRs. The weekly schedule is
+# disabled so this workflow doesn't re-propose 3.15. To resume, uncomment the
+# `schedule:` block below once Dependabot supports 3.15. It can still be run
+# manually from the Actions tab via workflow_dispatch.
 on:
-  schedule:
-    # Every Monday at 09:00 UTC. Comment/change this if you'd rather it
-    # ran on a different day — this specific time has no significance
-    # beyond "not midnight, so a failure is more likely to be noticed
-    # same-day rather than overnight."
-    - cron: "0 9 * * 1"
+  # schedule:
+  #   # Every Monday at 09:00 UTC.
+  #   - cron: "0 9 * * 1"
   # Lets you trigger a check on demand from the Actions tab, instead of
   # waiting for next Monday, e.g. right after a Python series you're
   # watching for goes stable.
