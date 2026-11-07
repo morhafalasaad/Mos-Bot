@@ -17,11 +17,11 @@
 # "Python version" reporting), but it never opens a PR raising the Python
 # version your project targets. Bumping .python-version + runtime.txt to
 # a newer CPython series stays a deliberate, manual edit. NOTE (Nov 2026):
-# the project is pinned to 3.14 because Dependabot's pip updater does not
-# support 3.15 yet (tool_version_not_supported); revisit once it does —
-# push it and .github/workflows/tests.yml runs all 183 tests against it
-# automatically before you'd merge, but nothing currently opens that PR
-# for you unannounced.
+# the project was briefly held on 3.14 because Dependabot's pip updater did
+# not support 3.15 (tool_version_not_supported). GitHub announced Python
+# 3.15 support on 2026-11-03, so the project now targets 3.15. If weekly
+# pip PRs start failing with that error again, check Dependabot's supported
+# Python versions before assuming this file is at fault.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
