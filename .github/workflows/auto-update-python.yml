@@ -3,7 +3,7 @@ name: Auto-update Python version
 # Weekly check for a newer STABLE Python minor series than the one
 # currently pinned in .python-version / runtime.txt, and opens a PR
 # bumping both if one exists. tests.yml's own `pull_request` trigger runs
-# all 183 tests against the PR — BUT ONLY IF the PR is opened with a
+# all 333 tests against the PR — BUT ONLY IF the PR is opened with a
 # personal access token, not the built-in GITHUB_TOKEN. GitHub deliberately
 # does not start other workflows for events caused by GITHUB_TOKEN (to
 # prevent recursive runs), so a PR opened with it sits with NO checks.
@@ -38,7 +38,7 @@ name: Auto-update Python version
 # was written), but that isn't something this workflow can verify
 # automatically today. Nor can it verify every pinned dependency in
 # requirements.txt actually installs and behaves correctly under the new
-# interpreter beyond what `pip install` and the 183 mocked tests catch —
+# interpreter beyond what `pip install` and the 333 mocked tests catch —
 # see this repo's README for the specific reason that matters here
 # (cloudscraper, in particular, is effectively unmaintained and nothing in
 # the test suite exercises its real runtime behavior). This is exactly why
@@ -47,25 +47,26 @@ name: Auto-update Python version
 # and the auto-merge section further down, for how to change that
 # tradeoff deliberately if you want to.
 #
-# WHAT "NEWER" MEANS HERE: only a newer MINOR series (3.14 -> 3.15) is
-# proposed. A newer PATCH within the currently-pinned minor (3.14.5 ->
-# 3.14.7) is intentionally never proposed by this workflow, because
+# WHAT "NEWER" MEANS HERE: only a newer MINOR series (3.15 -> 3.16) is
+# proposed. A newer PATCH within the currently-pinned minor (3.15.1 ->
+# 3.15.3) is intentionally never proposed by this workflow, because
 # .python-version/runtime.txt are already major.minor-only (see
 # README.md) — Render and actions/setup-python each independently resolve
 # their own latest matching patch on every deploy/run with NO file change
 # needed, so a patch-only bump would be a PR with nothing to actually
 # change.
 
-# PAUSED (Nov 2026): the project is pinned to Python 3.14 on purpose.
-# Dependabot's pip updater does not support 3.15 yet ("tool_version_not_supported"),
-# so the 3.15 bump (#108) broke weekly dependency PRs. The weekly schedule is
-# disabled so this workflow doesn't re-propose 3.15. To resume, uncomment the
-# `schedule:` block below once Dependabot supports 3.15. It can still be run
-# manually from the Actions tab via workflow_dispatch.
+# RESUMED (Nov 2026): this workflow was paused while the project sat on
+# Python 3.14, because Dependabot's pip updater did not yet support 3.15
+# ("tool_version_not_supported") and the earlier 3.15 bump (#108) broke the
+# weekly dependency PRs. GitHub announced Dependabot support for Python 3.15
+# on 2026-11-03, so the project now targets 3.15 and the weekly schedule is
+# back on. It can still be run manually from the Actions tab via
+# workflow_dispatch.
 on:
-  # schedule:
-  #   # Every Monday at 09:00 UTC.
-  #   - cron: "0 9 * * 1"
+  schedule:
+    # Every Monday at 09:00 UTC.
+    - cron: "0 9 * * 1"
   # Lets you trigger a check on demand from the Actions tab, instead of
   # waiting for next Monday, e.g. right after a Python series you're
   # watching for goes stable.
@@ -104,7 +105,7 @@ jobs:
           manifest="$(curl -fsSL https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json)"
 
           # Pick the highest "stable": true entry, then reduce it to its
-          # major.minor form (3.14.7 -> 3.14) — .python-version/runtime.txt
+          # major.minor form (3.15.3 -> 3.15) — .python-version/runtime.txt
           # intentionally never pin a patch (see the header comment above).
           latest_minor="$(echo "$manifest" | python3 -c '
           import json, sys
@@ -177,7 +178,7 @@ jobs:
 
             **This does not verify Render or dependency compatibility
             beyond what `requirements.txt` installing successfully and the
-            183 mocked tests in this PR's CI run catch.** In particular,
+            333 mocked tests in this PR's CI run catch.** In particular,
             `cloudscraper` is effectively unmaintained and nothing in the
             test suite exercises its real runtime behavior — see
             `README.md` for why this project treats a Python series bump

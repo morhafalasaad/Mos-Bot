@@ -248,9 +248,9 @@ pytest
 This project targets one Python series across CI, Render, and local
 development, tracked in two files that must be kept in sync:
 
-- `runtime.txt` — Render's required filename/format (`python-3.14`, no
+- `runtime.txt` — Render's required filename/format (`python-3.15`, no
   patch — Render resolves the latest matching patch at deploy time).
-- `.python-version` — the same series in the bare form (`3.14`, no
+- `.python-version` — the same series in the bare form (`3.15`, no
   `python-` prefix) that `actions/setup-python` and tools like pyenv/asdf
   read natively. `.github/workflows/tests.yml` reads this file via
   `python-version-file` rather than a hardcoded version, so CI always
@@ -259,7 +259,7 @@ development, tracked in two files that must be kept in sync:
 Both intentionally omit the patch version so a runner-image or Render
 base-image update can't break the build the way pinning an exact patch
 did previously (see `.github/workflows/tests.yml`'s own comment for that
-history). Bumping to a new CPython series (e.g. once 3.15 is stable and
+history). Bumping to a new CPython series (e.g. 3.16 once it is stable and
 every package in `requirements.txt` supports it) means editing both files
 together and pushing — the GitHub Actions workflow then runs all tests
 against the new version automatically before you'd merge. Dependabot
@@ -273,7 +273,7 @@ no Dependabot ecosystem does that; see `dependabot.yml`'s comment.
 itself uses, and opens a PR updating both files when a newer one exists —
 `tests.yml` then runs automatically against that PR. The PR is left for
 manual merge by default rather than auto-merged, since this project's test
-suite (183 tests, all mocked — no real Gemini/Telegram/Mostaql/MongoDB
+suite (333 tests, all mocked — no real Gemini/Telegram/Mostaql/MongoDB
 calls) can't fully characterize whether a Python series bump is safe in
 production, and `cloudscraper` in particular has had no upstream release
 since April 2023. See that workflow file's own comments for exactly how to
