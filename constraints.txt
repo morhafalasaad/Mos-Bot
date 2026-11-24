@@ -3,7 +3,7 @@
 # older versions if something pulls the package in.
 #
 # eMudhra CA key compromise (Render advisory): certifi >= 2026.10.19
-certifi>=2026.10.23
+certifi>=2026.11.20
 # Network stack, current releases as of 2026-10-27
 requests>=2.34.2
 urllib3>=2.8.0
